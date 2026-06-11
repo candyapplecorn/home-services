@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start or attach to the home-services tmux session (dictation + moviewatch).
+# Manage the home-services tmux session (dictation + moviewatch).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,64 +7,193 @@ SESSION="${JOES_SERVICES_TMUX_SESSION:-home-services}"
 PATH_PREFIX="${JOES_SERVICES_PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
 DICTATION_DIR="${JOES_SERVICES_DICTATION_DIR:-$ROOT/dictation}"
 MOVIEWATCH_SCRIPT="${JOES_SERVICES_MOVIEWATCH_SCRIPT:-$ROOT/moviewatch/moviewatch2.sh}"
-ATTACH=0
-RESTART=0
+APP_SUPPORT="${HOME_SERVICES_APP_SUPPORT:-$HOME/Library/Application Support/HomeServices}"
+LOG_DIR="$APP_SUPPORT/logs"
+MOVIEWATCH_LOG="$LOG_DIR/moviewatch.log"
 
 usage() {
   cat <<EOF
-home-services — tmux session for dictation-router + moviewatch2
+home-services - manage dictation-router + moviewatch2
 
 Usage:
-  home-services           Start detached (no-op if already running)
-  home-services -a        Attach to session (start first if missing)
-  home-services -r        Kill and recreate session
-  home-services --help    Show this help
+  home-services                 Start detached (no-op if already running)
+  home-services start           Start detached
+  home-services status          Print tmux service status
+  home-services stop            Stop the tmux session
+  home-services restart         Stop and recreate the tmux session
+  home-services attach          Attach to the tmux session
+  home-services logs            Print log file paths
+  home-services doctor          Check runtime dependencies
+  home-services open-config     Open dictation/config.yaml
+  home-services open-logs       Open the HomeServices log directory
+  home-services -a              Backward-compatible alias for attach
+  home-services -r              Backward-compatible alias for restart
+  home-services --help          Show this help
 EOF
 }
 
-while (($#)); do
-  case "$1" in
-    -a|--attach) ATTACH=1 ;;
-    -r|--restart) RESTART=1 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "home-services: unknown option $1" >&2; exit 1 ;;
-  esac
-  shift
-done
-
-command -v tmux >/dev/null 2>&1 || {
-  echo "home-services: tmux not found. Run: $ROOT/install.sh" >&2
-  exit 1
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
 }
-[[ -x "$DICTATION_DIR/.venv/bin/dictation-router" ]] || {
-  echo "home-services: dictation app is not installed. Run: $ROOT/install.sh" >&2
-  exit 1
+
+tmux_exists() {
+  command_exists tmux
 }
-[[ -x "$MOVIEWATCH_SCRIPT" ]] || { echo "home-services: missing $MOVIEWATCH_SCRIPT" >&2; exit 1; }
 
-if (( RESTART )) && tmux has-session -t "$SESSION" 2>/dev/null; then
-  tmux kill-session -t "$SESSION"
-fi
+session_exists() {
+  tmux_exists && tmux has-session -t "$SESSION" 2>/dev/null
+}
 
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-  if (( ATTACH )); then
-    exec tmux attach-session -t "$SESSION"
+require_tmux() {
+  tmux_exists || {
+    echo "home-services: tmux not found. Run: $ROOT/install.sh" >&2
+    exit 1
+  }
+}
+
+require_runtime() {
+  require_tmux
+  [[ -x "$DICTATION_DIR/.venv/bin/dictation-router" ]] || {
+    echo "home-services: dictation app is not installed. Run: $ROOT/install.sh" >&2
+    exit 1
+  }
+  [[ -x "$MOVIEWATCH_SCRIPT" ]] || {
+    echo "home-services: missing $MOVIEWATCH_SCRIPT" >&2
+    exit 1
+  }
+}
+
+start_services() {
+  require_runtime
+  mkdir -p "$LOG_DIR"
+
+  if session_exists; then
+    echo "home-services: session '$SESSION' already running"
+    return 0
   fi
-  echo "home-services: session '$SESSION' already running (attach: home-services -a)"
-  exit 0
-fi
 
-dictation_cmd="export PATH=$PATH_PREFIX; cd $(printf '%q' "$DICTATION_DIR") && exec $(printf '%q' "$DICTATION_DIR/.venv/bin/dictation-router")"
-moviewatch_cmd="export PATH=$PATH_PREFIX; exec $(printf '%q' "$MOVIEWATCH_SCRIPT")"
-win="${SESSION}:services"
+  local dictation_cmd moviewatch_cmd win pane_dictation pane_moviewatch
+  dictation_cmd="export PATH=$PATH_PREFIX; cd $(printf '%q' "$DICTATION_DIR") && exec $(printf '%q' "$DICTATION_DIR/.venv/bin/dictation-router")"
+  moviewatch_cmd="export PATH=$PATH_PREFIX; exec $(printf '%q' "$MOVIEWATCH_SCRIPT") >> $(printf '%q' "$MOVIEWATCH_LOG") 2>&1"
+  win="${SESSION}:services"
 
-tmux new-session -d -s "$SESSION" -n services "$dictation_cmd"
-pane_dictation="$(tmux list-panes -t "$win" -F '#{pane_id}' | head -1)"
-tmux split-window -t "$pane_dictation" -v "$moviewatch_cmd"
-pane_moviewatch="$(tmux list-panes -t "$win" -F '#{pane_id}' | tail -1)"
-tmux select-pane -t "$pane_dictation" -T dictation
-tmux select-pane -t "$pane_moviewatch" -T moviewatch
-tmux select-pane -t "$pane_dictation"
+  tmux new-session -d -s "$SESSION" -n services "$dictation_cmd"
+  pane_dictation="$(tmux list-panes -t "$win" -F '#{pane_id}' | head -1)"
+  tmux split-window -t "$pane_dictation" -v "$moviewatch_cmd"
+  pane_moviewatch="$(tmux list-panes -t "$win" -F '#{pane_id}' | tail -1)"
+  tmux select-pane -t "$pane_dictation" -T dictation
+  tmux select-pane -t "$pane_moviewatch" -T moviewatch
+  tmux select-pane -t "$pane_dictation"
 
-echo "home-services: started session '$SESSION' (dictation + moviewatch)"
-(( ATTACH )) && exec tmux attach-session -t "$SESSION"
+  echo "home-services: started session '$SESSION' (dictation + moviewatch)"
+}
+
+stop_services() {
+  require_tmux
+  if session_exists; then
+    tmux kill-session -t "$SESSION"
+    echo "home-services: stopped session '$SESSION'"
+  else
+    echo "home-services: session '$SESSION' is not running"
+  fi
+}
+
+restart_services() {
+  require_tmux
+  if session_exists; then
+    tmux kill-session -t "$SESSION"
+  fi
+  start_services
+}
+
+attach_services() {
+  start_services >/dev/null
+  exec tmux attach-session -t "$SESSION"
+}
+
+status_services() {
+  if ! tmux_exists; then
+    echo "status=missing-tmux"
+    exit 2
+  fi
+
+  if ! session_exists; then
+    echo "status=stopped"
+    exit 1
+  fi
+
+  echo "status=running"
+  tmux list-panes -t "${SESSION}:services" -F 'pane=#{pane_title} active=#{pane_active} command=#{pane_current_command}' 2>/dev/null || true
+}
+
+logs_services() {
+  echo "dictation_logs=$HOME/Library/Application Support/DictationRouter/logs"
+  echo "dictation_transcripts=$HOME/Library/Application Support/DictationRouter/transcripts"
+  echo "moviewatch_log=$MOVIEWATCH_LOG"
+}
+
+doctor_services() {
+  local failed=0
+
+  check_command() {
+    local name="$1"
+    if command_exists "$name"; then
+      echo "ok: $name ($(command -v "$name"))"
+    else
+      echo "missing: $name"
+      failed=1
+    fi
+  }
+
+  check_path() {
+    local label="$1"
+    local path="$2"
+    if [[ -e "$path" ]]; then
+      echo "ok: $label ($path)"
+    else
+      echo "missing: $label ($path)"
+      failed=1
+    fi
+  }
+
+  check_command tmux
+  check_command ffmpeg
+  check_command ffprobe
+  check_command bc
+  check_command whisper-cli
+  check_path dictation-router "$DICTATION_DIR/.venv/bin/dictation-router"
+  check_path moviewatch "$MOVIEWATCH_SCRIPT"
+  check_path "default Whisper model" "$HOME/.cache/whisper-cpp/ggml-medium.en.bin"
+
+  if (( failed )); then
+    echo "home-services: doctor found missing items"
+    exit 1
+  fi
+  echo "home-services: doctor passed"
+}
+
+open_config() {
+  open "$ROOT/dictation/config.yaml"
+}
+
+open_logs() {
+  mkdir -p "$LOG_DIR"
+  open "$LOG_DIR"
+}
+
+cmd="${1:-start}"
+case "$cmd" in
+  start) start_services ;;
+  status) status_services ;;
+  stop) stop_services ;;
+  restart) restart_services ;;
+  attach) attach_services ;;
+  logs) logs_services ;;
+  doctor) doctor_services ;;
+  open-config) open_config ;;
+  open-logs) open_logs ;;
+  -a|--attach) attach_services ;;
+  -r|--restart) restart_services ;;
+  -h|--help|help) usage ;;
+  *) echo "home-services: unknown command $cmd" >&2; usage >&2; exit 1 ;;
+esac

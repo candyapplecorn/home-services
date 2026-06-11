@@ -75,9 +75,12 @@ Path: System Settings -> Privacy & Security.
 ## Run
 
 ```bash
-~/bin/home-services/bin/home-services        # start detached
-~/bin/home-services/bin/home-services -a     # start if needed, then attach
-~/bin/home-services/bin/home-services -r     # restart the tmux session
+~/bin/home-services/bin/home-services start    # start detached
+~/bin/home-services/bin/home-services status   # show service status
+~/bin/home-services/bin/home-services stop     # stop services
+~/bin/home-services/bin/home-services restart  # restart the tmux session
+~/bin/home-services/bin/home-services attach   # start if needed, then attach
+~/bin/home-services/bin/home-services doctor   # check dependencies
 ```
 
 The tmux layout is:
@@ -111,6 +114,25 @@ home-services
 ```
 
 That starts both services in a detached tmux session.
+
+## Menu Bar App
+
+Build the native macOS menu bar utility:
+
+```bash
+cd ~/bin/home-services
+./menubar/build-app.sh
+open "menubar/dist/Home Services.app"
+```
+
+The app runs without a Dock icon and adds an `HS` menu bar item with controls for:
+
+- Start, stop, restart, and status
+- Opening the tmux session in Terminal
+- Opening dictation config and logs
+- Running `home-services doctor`
+
+The app defaults to `~/bin/home-services`. If the repo lives somewhere else, launch it with `HOME_SERVICES_ROOT` set to the repo path.
 
 ## Configuration
 
