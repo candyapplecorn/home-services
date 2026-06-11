@@ -46,6 +46,7 @@ class EditorConfig:
 class AudioConfig:
     sample_rate: int = 16000
     channels: int = 1
+    device: int | str | None = None
 
 
 @dataclass
@@ -109,6 +110,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         audio=AudioConfig(
             sample_rate=int(audio_raw.get("sample_rate", 16000)),
             channels=int(audio_raw.get("channels", 1)),
+            device=audio_raw.get("device"),
         ),
     )
 

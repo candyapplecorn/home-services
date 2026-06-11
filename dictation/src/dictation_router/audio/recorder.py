@@ -14,9 +14,10 @@ from dictation_router.config.settings import RECORDINGS_DIR, ensure_app_dirs
 class AudioRecorder:
     """Capture microphone input to a temporary WAV file."""
 
-    def __init__(self, sample_rate: int = 16000, channels: int = 1) -> None:
+    def __init__(self, sample_rate: int = 16000, channels: int = 1, device: int | str | None = None) -> None:
         self.sample_rate = sample_rate
         self.channels = channels
+        self.device = device
         self._frames: list[np.ndarray] = []
         self._stream: sd.InputStream | None = None
         self._lock = threading.Lock()
@@ -47,6 +48,7 @@ class AudioRecorder:
         self._output_path = RECORDINGS_DIR / f"{timestamp}.wav"
 
         self._stream = sd.InputStream(
+            device=self.device,
             samplerate=self.sample_rate,
             channels=self.channels,
             dtype="float32",

@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import soundfile as sf
 
 from dictation_router.audio.recorder import AudioRecorder
@@ -28,6 +29,7 @@ class DictationApp:
         self.recorder = AudioRecorder(
             sample_rate=config.audio.sample_rate,
             channels=config.audio.channels,
+            device=config.audio.device,
         )
         self.transcriber = WhisperCppTranscriber(
             model=config.transcription.model,
@@ -95,12 +97,24 @@ class DictationApp:
 
             audio_path = self.recorder.stop()
             duration_s = sf.info(str(audio_path)).duration
+            audio, _sample_rate = sf.read(str(audio_path), dtype="float32", always_2d=True)
+            peak_level = float(np.max(np.abs(audio))) if audio.size else 0.0
+            rms_level = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
             self.logger.info(
-                "Saved recording to %s (%.1fs, %.1f KB)",
+                "Saved recording to %s (%.1fs, %.1f KB, peak %.4f, rms %.4f)",
                 audio_path,
                 duration_s,
                 audio_path.stat().st_size / 1024,
+                peak_level,
+                rms_level,
             )
+            if peak_level < 0.01 or rms_level < 0.001:
+                self.logger.warning(
+                    "Recording looks nearly silent (peak %.4f, rms %.4f). "
+                    "Check the selected microphone and macOS Microphone permission for the terminal/tmux host.",
+                    peak_level,
+                    rms_level,
+                )
 
             started = time.perf_counter()
             transcript = self.transcriber.transcribe(audio_path)
@@ -158,6 +172,12 @@ class DictationApp:
             describe_hotkey(self.config.hotkeys.clean),
         )
         self.logger.info("Whisper model: %s", self.config.transcription.model)
+        self.logger.info(
+            "Audio input: device=%s sample_rate=%d channels=%d",
+            self.config.audio.device if self.config.audio.device is not None else "system-default",
+            self.config.audio.sample_rate,
+            self.config.audio.channels,
+        )
 
         if not check_accessibility(self.logger):
             self.logger.error("Waiting for Accessibility permission — hotkeys disabled until restart.")

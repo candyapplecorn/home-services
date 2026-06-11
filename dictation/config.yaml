@@ -28,3 +28,6 @@ hotkeys:
 audio:
   sample_rate: 16000
   channels: 1
+  # Optional: set to a device index or exact device name if macOS picks the wrong input.
+  # List devices with: python -m sounddevice
+  device:
