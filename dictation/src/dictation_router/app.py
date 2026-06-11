@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import signal
 import threading
 import time
 from pathlib import Path
@@ -215,10 +217,24 @@ class DictationApp:
         if not check_accessibility(self.logger):
             self.logger.error("Waiting for Accessibility permission — hotkeys disabled until restart.")
 
+        def force_shutdown(signum, _frame) -> None:  # noqa: ANN001
+            self.logger.info("Shutting down")
+            try:
+                self._hotkeys.stop()
+            except Exception:
+                self.logger.exception("Failed to stop hotkey listener during shutdown")
+            os._exit(128 + signum)
+
+        signal.signal(signal.SIGINT, force_shutdown)
+        signal.signal(signal.SIGTERM, force_shutdown)
+
         self._hotkeys.start()
         try:
             threading.Event().wait()
         except KeyboardInterrupt:
             self.logger.info("Shutting down")
         finally:
-            self._hotkeys.stop()
+            try:
+                self._hotkeys.stop()
+            finally:
+                os._exit(130)

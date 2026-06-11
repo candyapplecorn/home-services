@@ -78,6 +78,7 @@ Path: System Settings -> Privacy & Security.
 ~/bin/home-services/bin/home-services start    # start detached
 ~/bin/home-services/bin/home-services status   # show service status
 ~/bin/home-services/bin/home-services stop     # stop services
+~/bin/home-services/bin/home-services kill     # force-kill a wedged tmux session
 ~/bin/home-services/bin/home-services restart  # restart the tmux session
 ~/bin/home-services/bin/home-services attach   # start if needed, then attach
 ~/bin/home-services/bin/home-services doctor   # check dependencies

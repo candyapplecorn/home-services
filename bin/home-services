@@ -20,6 +20,7 @@ Usage:
   home-services start           Start detached
   home-services status          Print tmux service status
   home-services stop            Stop the tmux session
+  home-services kill            Force-kill the tmux session
   home-services restart         Stop and recreate the tmux session
   home-services attach          Attach to the tmux session
   home-services logs            Print log file paths
@@ -93,6 +94,16 @@ stop_services() {
   if session_exists; then
     tmux kill-session -t "$SESSION"
     echo "home-services: stopped session '$SESSION'"
+  else
+    echo "home-services: session '$SESSION' is not running"
+  fi
+}
+
+kill_services() {
+  require_tmux
+  if session_exists; then
+    tmux kill-session -t "$SESSION"
+    echo "home-services: killed session '$SESSION'"
   else
     echo "home-services: session '$SESSION' is not running"
   fi
@@ -186,6 +197,7 @@ case "$cmd" in
   start) start_services ;;
   status) status_services ;;
   stop) stop_services ;;
+  kill) kill_services ;;
   restart) restart_services ;;
   attach) attach_services ;;
   logs) logs_services ;;
