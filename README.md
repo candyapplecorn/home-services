@@ -53,6 +53,14 @@ You can choose a different model with:
 HOME_SERVICES_WHISPER_MODEL=small.en ./install.sh --download-model
 ```
 
+OpenAI also publishes direct `.pt` model download URLs in
+[`whisper/__init__.py`](https://github.com/openai/whisper/blob/main/whisper/__init__.py#L17-L30).
+To use one of those PyTorch downloads with `whisper.cpp`, follow the
+[`convert-pt-to-ggml.py` conversion instructions](https://github.com/ggml-org/whisper.cpp/tree/master/models#3-convert-with-convert-pt-to-ggmlpy)
+and the
+[`models/convert-pt-to-ggml.py` script](https://github.com/ggml-org/whisper.cpp/blob/master/models/convert-pt-to-ggml.py)
+to produce a `ggml-*.bin` file.
+
 If you use a different model, update `dictation/config.yaml` so `transcription.model` matches the downloaded file.
 
 ## Permissions
