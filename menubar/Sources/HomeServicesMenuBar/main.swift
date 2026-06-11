@@ -147,7 +147,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startServices() {
-        runner.run(["start"]) { [weak self] _, _ in self?.refreshStatus() }
+        runInTerminal("start")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.refreshStatus()
+        }
     }
 
     @objc private func stopServices() {
@@ -161,7 +164,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         guard confirmDestructiveAction(title: "Restart Home Services?", message: "This will stop the running tmux session and start a new one.") else {
             return
         }
-        runner.run(["restart"]) { [weak self] _, _ in self?.refreshStatus() }
+        runInTerminal("restart")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.refreshStatus()
+        }
     }
 
     @objc private func openConfig() {
@@ -179,7 +185,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openTmuxSession() {
-        let command = "\(shellQuote(runner.rootPath))/bin/home-services attach"
+        runInTerminal("attach")
+    }
+
+    private func runInTerminal(_ commandName: String) {
+        let command = "\(shellQuote(runner.rootPath))/bin/home-services \(commandName)"
         let script = """
         tell application "Terminal"
           do script "\(escapeAppleScript(command))"
