@@ -185,6 +185,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(actionItem("Run Doctor", #selector(runDoctor)))
 
         menu.addItem(.separator())
+        menu.addItem(actionItem("Install Startup Task...", #selector(installStartupTask)))
+        menu.addItem(actionItem("Uninstall Startup Task...", #selector(uninstallStartupTask)))
+        menu.addItem(actionItem("Create Desktop Launcher", #selector(createDesktopLauncher)))
+
+        menu.addItem(.separator())
         let rootItem = NSMenuItem(title: "Root: \(runner.rootPath)", action: nil, keyEquivalent: "")
         rootItem.isEnabled = false
         menu.addItem(rootItem)
@@ -237,6 +242,53 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func installStartupTask() {
+        guard confirmAction(
+            title: "Install Startup Task?",
+            message: "Home Services will start its background tmux session automatically when you log in.",
+            continueTitle: "Install",
+            alertStyle: .informational
+        ) else {
+            return
+        }
+
+        runner.run(["install-startup"]) { [weak self] status, output in
+            self?.showAlert(
+                title: status == 0 ? "Startup Task Installed" : "Startup Task Failed",
+                message: output.isEmpty ? "No output." : output
+            )
+            self?.refreshStatus()
+        }
+    }
+
+    @objc private func uninstallStartupTask() {
+        guard confirmAction(
+            title: "Remove Startup Task?",
+            message: "Home Services will stop launching automatically when you log in. Running services are not stopped.",
+            continueTitle: "Remove",
+            alertStyle: .warning
+        ) else {
+            return
+        }
+
+        runner.run(["uninstall-startup"]) { [weak self] status, output in
+            self?.showAlert(
+                title: status == 0 ? "Startup Task Removed" : "Startup Task Removal Failed",
+                message: output.isEmpty ? "No output." : output
+            )
+            self?.refreshStatus()
+        }
+    }
+
+    @objc private func createDesktopLauncher() {
+        runner.run(["install-desktop-shortcut"]) { [weak self] status, output in
+            self?.showAlert(
+                title: status == 0 ? "Desktop Launcher Created" : "Desktop Launcher Failed",
+                message: output.isEmpty ? "No output." : output
+            )
+        }
+    }
+
     @objc private func openTmuxSession() {
         runInTerminal("attach")
     }
@@ -283,12 +335,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func confirmDestructiveAction(title: String, message: String) -> Bool {
+        confirmAction(title: title, message: message, continueTitle: "Continue", alertStyle: .warning)
+    }
+
+    private func confirmAction(title: String, message: String, continueTitle: String, alertStyle: NSAlert.Style) -> Bool {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
-        alert.alertStyle = .warning
+        alert.alertStyle = alertStyle
         alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: continueTitle)
         NSApp.activate(ignoringOtherApps: true)
         return alert.runModal() == .alertSecondButtonReturn
     }

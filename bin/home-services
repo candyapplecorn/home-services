@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SESSION="${JOES_SERVICES_TMUX_SESSION:-home-services}"
 PATH_PREFIX="${JOES_SERVICES_PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+export PATH="$PATH_PREFIX"
 DICTATION_DIR="${JOES_SERVICES_DICTATION_DIR:-$ROOT/dictation}"
 MOVIEWATCH_SCRIPT="${JOES_SERVICES_MOVIEWATCH_SCRIPT:-$ROOT/moviewatch/moviewatch2.sh}"
 AI_HELPER_BIN="${HOME_SERVICES_AI_HELPER_BIN:-$ROOT/bin/ai-helper}"
@@ -12,6 +13,9 @@ APP_SUPPORT="${HOME_SERVICES_APP_SUPPORT:-$HOME/Library/Application Support/Home
 LOG_DIR="$APP_SUPPORT/logs"
 MOVIEWATCH_LOG="$LOG_DIR/moviewatch.log"
 DICTATION_STATE_FILE="$HOME/Library/Application Support/DictationRouter/state"
+LAUNCH_AGENT_LABEL="${HOME_SERVICES_LAUNCH_AGENT_LABEL:-com.jburger.home-services}"
+LAUNCH_AGENT_PLIST="${HOME_SERVICES_LAUNCH_AGENT_PLIST:-$HOME/Library/LaunchAgents/$LAUNCH_AGENT_LABEL.plist}"
+DESKTOP_SHORTCUT="${HOME_SERVICES_DESKTOP_SHORTCUT:-$HOME/Desktop/Home Services.command}"
 
 usage() {
   cat <<EOF
@@ -27,6 +31,12 @@ Usage:
   home-services attach          Attach to the tmux session
   home-services logs            Print log file paths
   home-services doctor          Check runtime dependencies
+  home-services install-startup Install a LaunchAgent that starts services at login
+  home-services uninstall-startup
+                                Remove the login LaunchAgent
+  home-services startup-status  Print login LaunchAgent status
+  home-services install-desktop-shortcut
+                                Create a double-click Desktop launcher
   home-services ai-helper ...   Run the experimental on-demand AI helper
   home-services open-config     Open dictation/config.yaml
   home-services open-logs       Open the HomeServices log directory
@@ -153,6 +163,133 @@ logs_services() {
   echo "experimental_ai_helper_recordings=$HOME/Library/Application Support/HomeServices/ai-helper/recordings"
 }
 
+xml_escape() {
+  local value="$1"
+  value="${value//&/&amp;}"
+  value="${value//</&lt;}"
+  value="${value//>/&gt;}"
+  value="${value//\"/&quot;}"
+  value="${value//\'/&apos;}"
+  printf '%s' "$value"
+}
+
+write_startup_plist() {
+  local launcher_path stdout_log stderr_log root_path path_value label_value
+  launcher_path="$(xml_escape "$ROOT/bin/home-services")"
+  stdout_log="$(xml_escape "$LOG_DIR/launchagent.out.log")"
+  stderr_log="$(xml_escape "$LOG_DIR/launchagent.err.log")"
+  root_path="$(xml_escape "$ROOT")"
+  path_value="$(xml_escape "$PATH_PREFIX")"
+  label_value="$(xml_escape "$LAUNCH_AGENT_LABEL")"
+
+  mkdir -p "$(dirname "$LAUNCH_AGENT_PLIST")" "$LOG_DIR"
+  cat > "$LAUNCH_AGENT_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$label_value</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$launcher_path</string>
+    <string>start</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME_SERVICES_ROOT</key>
+    <string>$root_path</string>
+    <key>PATH</key>
+    <string>$path_value</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$stdout_log</string>
+  <key>StandardErrorPath</key>
+  <string>$stderr_log</string>
+</dict>
+</plist>
+EOF
+}
+
+launchctl_domain() {
+  printf 'gui/%s' "$(id -u)"
+}
+
+install_startup() {
+  write_startup_plist
+
+  if [[ "${HOME_SERVICES_SKIP_LAUNCHCTL:-0}" == "1" ]]; then
+    echo "home-services: wrote startup task plist (launchctl skipped)"
+    echo "startup_plist=$LAUNCH_AGENT_PLIST"
+    return 0
+  fi
+
+  command_exists launchctl || {
+    echo "home-services: launchctl not found" >&2
+    exit 1
+  }
+
+  local domain
+  domain="$(launchctl_domain)"
+  launchctl bootout "$domain/$LAUNCH_AGENT_LABEL" >/dev/null 2>&1 || true
+  launchctl bootout "$domain" "$LAUNCH_AGENT_PLIST" >/dev/null 2>&1 || true
+  launchctl bootstrap "$domain" "$LAUNCH_AGENT_PLIST"
+  launchctl enable "$domain/$LAUNCH_AGENT_LABEL" >/dev/null 2>&1 || true
+  launchctl kickstart -k "$domain/$LAUNCH_AGENT_LABEL" >/dev/null 2>&1 || true
+
+  echo "home-services: installed startup task '$LAUNCH_AGENT_LABEL'"
+  echo "startup_plist=$LAUNCH_AGENT_PLIST"
+  echo "startup_stdout=$LOG_DIR/launchagent.out.log"
+  echo "startup_stderr=$LOG_DIR/launchagent.err.log"
+}
+
+uninstall_startup() {
+  if [[ "${HOME_SERVICES_SKIP_LAUNCHCTL:-0}" != "1" ]] && command_exists launchctl; then
+    local domain
+    domain="$(launchctl_domain)"
+    launchctl bootout "$domain/$LAUNCH_AGENT_LABEL" >/dev/null 2>&1 || true
+    launchctl bootout "$domain" "$LAUNCH_AGENT_PLIST" >/dev/null 2>&1 || true
+  fi
+
+  rm -f "$LAUNCH_AGENT_PLIST"
+  echo "home-services: removed startup task '$LAUNCH_AGENT_LABEL'"
+}
+
+startup_status() {
+  echo "startup_label=$LAUNCH_AGENT_LABEL"
+  if [[ -f "$LAUNCH_AGENT_PLIST" ]]; then
+    echo "startup_installed=yes"
+    echo "startup_plist=$LAUNCH_AGENT_PLIST"
+  else
+    echo "startup_installed=no"
+  fi
+
+  if [[ "${HOME_SERVICES_SKIP_LAUNCHCTL:-0}" == "1" ]]; then
+    echo "startup_loaded=unknown"
+  elif command_exists launchctl && launchctl print "$(launchctl_domain)/$LAUNCH_AGENT_LABEL" >/dev/null 2>&1; then
+    echo "startup_loaded=yes"
+  else
+    echo "startup_loaded=no"
+  fi
+}
+
+install_desktop_shortcut() {
+  local launcher_cmd
+  printf -v launcher_cmd '%q' "$ROOT/bin/home-services"
+
+  mkdir -p "$(dirname "$DESKTOP_SHORTCUT")"
+  cat > "$DESKTOP_SHORTCUT" <<EOF
+#!/usr/bin/env bash
+exec $launcher_cmd attach
+EOF
+  chmod +x "$DESKTOP_SHORTCUT"
+
+  echo "home-services: installed Desktop launcher"
+  echo "desktop_shortcut=$DESKTOP_SHORTCUT"
+}
+
 doctor_services() {
   local failed=0
 
@@ -222,6 +359,10 @@ case "$cmd" in
   attach) attach_services ;;
   logs) logs_services ;;
   doctor) doctor_services ;;
+  install-startup) install_startup ;;
+  uninstall-startup) uninstall_startup ;;
+  startup-status) startup_status ;;
+  install-desktop-shortcut) install_desktop_shortcut ;;
   ai-helper) shift; run_ai_helper "$@" ;;
   open-config) open_config ;;
   open-logs) open_logs ;;

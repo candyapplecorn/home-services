@@ -173,6 +173,9 @@ Path: System Settings -> Privacy & Security.
 ~/bin/home-services/bin/home-services restart  # restart the tmux session
 ~/bin/home-services/bin/home-services attach   # start if needed, then attach
 ~/bin/home-services/bin/home-services doctor   # check dependencies
+~/bin/home-services/bin/home-services install-startup
+~/bin/home-services/bin/home-services uninstall-startup
+~/bin/home-services/bin/home-services install-desktop-shortcut
 ```
 
 The tmux layout is:
@@ -198,6 +201,26 @@ alias hsr='home-services -r'
 ```
 
 If your shell setup auto-sources local files, put those aliases in the appropriate local shell file.
+
+## Startup Task And Desktop Launcher
+
+Install a macOS LaunchAgent so the detached tmux services start when you log in:
+
+```bash
+~/bin/home-services/bin/home-services install-startup
+```
+
+Remove it with:
+
+```bash
+~/bin/home-services/bin/home-services uninstall-startup
+```
+
+Create a double-clickable Desktop launcher that opens and attaches to the tmux session:
+
+```bash
+~/bin/home-services/bin/home-services install-desktop-shortcut
+```
 
 ## iTerm2 Startup
 
@@ -225,6 +248,8 @@ The app runs without a Dock icon and adds an `HS` menu bar item with controls fo
 - Opening the tmux session in Terminal
 - Opening dictation config and logs
 - Running `home-services doctor`
+- Installing or removing the login startup task
+- Creating the Desktop launcher
 
 The app defaults to `~/bin/home-services`. If the repo lives somewhere else, launch it with `HOME_SERVICES_ROOT` set to the repo path.
 
