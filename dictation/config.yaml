@@ -1,0 +1,30 @@
+transcription:
+  model: medium.en
+  whisper_cli: whisper-cli
+  whisper_models_dir: ~/.cache/whisper-cpp
+  keep_recordings: false
+  split_on_word: true
+  # Default whisper-cli is 0.6; lower keeps quiet/pause-heavy speech (walking around room)
+  no_speech_threshold: 0.35
+  logprob_threshold: -1.0
+  # Warn when transcript density suggests dropped 30s windows
+  min_chars_per_minute: 200
+
+routing:
+  # Use clipboard paste above this length (typing long text is slow/unreliable)
+  max_typing_chars: 500
+
+editor:
+  preferred:
+    - WebStorm
+    - Rider
+    - TextEdit
+
+hotkeys:
+  insert: "cmd+alt+ctrl+d"
+  review: "cmd+alt+ctrl+r"
+  clean: "cmd+alt+ctrl+c"
+
+audio:
+  sample_rate: 16000
+  channels: 1

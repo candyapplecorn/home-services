@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Start or attach to the home-services tmux session (dictation + moviewatch).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SESSION="${JOES_SERVICES_TMUX_SESSION:-home-services}"
+PATH_PREFIX="${JOES_SERVICES_PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+DICTATION_DIR="${JOES_SERVICES_DICTATION_DIR:-$ROOT/dictation}"
+MOVIEWATCH_SCRIPT="${JOES_SERVICES_MOVIEWATCH_SCRIPT:-$ROOT/moviewatch/moviewatch2.sh}"
+ATTACH=0
+RESTART=0
+
+usage() {
+  cat <<EOF
+home-services — tmux session for dictation-router + moviewatch2
+
+Usage:
+  home-services           Start detached (no-op if already running)
+  home-services -a        Attach to session (start first if missing)
+  home-services -r        Kill and recreate session
+  home-services --help    Show this help
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    -a|--attach) ATTACH=1 ;;
+    -r|--restart) RESTART=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "home-services: unknown option $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+command -v tmux >/dev/null 2>&1 || {
+  echo "home-services: tmux not found. Run: $ROOT/install.sh" >&2
+  exit 1
+}
+[[ -x "$DICTATION_DIR/.venv/bin/dictation-router" ]] || {
+  echo "home-services: dictation app is not installed. Run: $ROOT/install.sh" >&2
+  exit 1
+}
+[[ -x "$MOVIEWATCH_SCRIPT" ]] || { echo "home-services: missing $MOVIEWATCH_SCRIPT" >&2; exit 1; }
+
+if (( RESTART )) && tmux has-session -t "$SESSION" 2>/dev/null; then
+  tmux kill-session -t "$SESSION"
+fi
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  if (( ATTACH )); then
+    exec tmux attach-session -t "$SESSION"
+  fi
+  echo "home-services: session '$SESSION' already running (attach: home-services -a)"
+  exit 0
+fi
+
+dictation_cmd="export PATH=$PATH_PREFIX; cd $(printf '%q' "$DICTATION_DIR") && exec $(printf '%q' "$DICTATION_DIR/.venv/bin/dictation-router")"
+moviewatch_cmd="export PATH=$PATH_PREFIX; exec $(printf '%q' "$MOVIEWATCH_SCRIPT")"
+win="${SESSION}:services"
+
+tmux new-session -d -s "$SESSION" -n services "$dictation_cmd"
+pane_dictation="$(tmux list-panes -t "$win" -F '#{pane_id}' | head -1)"
+tmux split-window -t "$pane_dictation" -v "$moviewatch_cmd"
+pane_moviewatch="$(tmux list-panes -t "$win" -F '#{pane_id}' | tail -1)"
+tmux select-pane -t "$pane_dictation" -T dictation
+tmux select-pane -t "$pane_moviewatch" -T moviewatch
+tmux select-pane -t "$pane_dictation"
+
+echo "home-services: started session '$SESSION' (dictation + moviewatch)"
+(( ATTACH )) && exec tmux attach-session -t "$SESSION"
