@@ -74,7 +74,7 @@ start_services() {
 
   local dictation_cmd moviewatch_cmd win pane_dictation pane_moviewatch
   dictation_cmd="export PATH=$PATH_PREFIX; cd $(printf '%q' "$DICTATION_DIR") && exec $(printf '%q' "$DICTATION_DIR/.venv/bin/dictation-router")"
-  moviewatch_cmd="export PATH=$PATH_PREFIX; exec $(printf '%q' "$MOVIEWATCH_SCRIPT") >> $(printf '%q' "$MOVIEWATCH_LOG") 2>&1"
+  moviewatch_cmd="export PATH=$PATH_PREFIX; $(printf '%q' "$MOVIEWATCH_SCRIPT") 2>&1 | tee -a $(printf '%q' "$MOVIEWATCH_LOG")"
   win="${SESSION}:services"
 
   tmux new-session -d -s "$SESSION" -n services "$dictation_cmd"
