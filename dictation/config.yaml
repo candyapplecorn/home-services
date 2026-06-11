@@ -3,6 +3,7 @@ transcription:
   whisper_cli: whisper-cli
   whisper_models_dir: ~/.cache/whisper-cpp
   keep_recordings: false
+  recording_retention_hours: 24
   split_on_word: true
   # Default whisper-cli is 0.6; lower keeps quiet/pause-heavy speech (walking around room)
   no_speech_threshold: 0.35
@@ -13,7 +14,9 @@ transcription:
   edge_hallucinations:
     - you
   # If audio/transcription gets stuck, the next hotkey after this delay resets processing.
-  processing_timeout_seconds: 120
+  processing_timeout_seconds: 30
+  # Bound PortAudio shutdown/WAV flush so memory pressure cannot leave hotkeys wedged.
+  recording_stop_timeout_seconds: 15
 
 routing:
   # Use clipboard paste above this length (typing long text is slow/unreliable)

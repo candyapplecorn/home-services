@@ -26,12 +26,14 @@ class TranscriptionConfig:
     whisper_cli: str = "whisper-cli"
     whisper_models_dir: Path = field(default_factory=lambda: Path("~/.cache/whisper-cpp").expanduser())
     keep_recordings: bool = False
+    recording_retention_hours: float = 24.0
     split_on_word: bool = True
     no_speech_threshold: float = 0.35
     logprob_threshold: float = -1.0
     min_chars_per_minute: float = 200.0
     edge_hallucinations: list[str] = field(default_factory=lambda: ["you"])
-    processing_timeout_seconds: float = 120.0
+    processing_timeout_seconds: float = 30.0
+    recording_stop_timeout_seconds: float = 15.0
 
 
 @dataclass
@@ -93,12 +95,16 @@ def load_config(path: Path | None = None) -> AppConfig:
                 transcription_raw.get("whisper_models_dir", "~/.cache/whisper-cpp")
             ),
             keep_recordings=bool(transcription_raw.get("keep_recordings", False)),
+            recording_retention_hours=float(transcription_raw.get("recording_retention_hours", 24.0)),
             split_on_word=bool(transcription_raw.get("split_on_word", True)),
             no_speech_threshold=float(transcription_raw.get("no_speech_threshold", 0.35)),
             logprob_threshold=float(transcription_raw.get("logprob_threshold", -1.0)),
             min_chars_per_minute=float(transcription_raw.get("min_chars_per_minute", 200.0)),
             edge_hallucinations=list(transcription_raw.get("edge_hallucinations", ["you"])),
-            processing_timeout_seconds=float(transcription_raw.get("processing_timeout_seconds", 120.0)),
+            processing_timeout_seconds=float(transcription_raw.get("processing_timeout_seconds", 30.0)),
+            recording_stop_timeout_seconds=float(
+                transcription_raw.get("recording_stop_timeout_seconds", 15.0)
+            ),
         ),
         routing=RoutingConfig(
             max_typing_chars=int(routing_raw.get("max_typing_chars", 500)),

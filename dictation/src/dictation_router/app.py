@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import signal
 import threading
 import time
@@ -11,7 +12,7 @@ import numpy as np
 import soundfile as sf
 
 from dictation_router.audio.recorder import AudioRecorder
-from dictation_router.config.settings import AppConfig, RoutingMode, ensure_app_dirs
+from dictation_router.config.settings import AppConfig, RECORDINGS_DIR, RoutingMode, ensure_app_dirs
 from dictation_router.routing.editor import EditorLauncher
 from dictation_router.routing.inserter import TextInserter
 from dictation_router.routing.router import Router
@@ -118,7 +119,9 @@ class DictationApp:
             self.logger.info("Recording stopped (%s mode)", mode.value if mode else "unknown")
             self.feedback.recording_stopped()
 
-            audio_path = self.recorder.stop()
+            self.logger.info("Stopping audio stream and writing recording")
+            audio_path = self._stop_recorder_with_timeout()
+            self.logger.info("Audio stream stopped; inspecting recording")
             duration_s = sf.info(str(audio_path)).duration
             audio, _sample_rate = sf.read(str(audio_path), dtype="float32", always_2d=True)
             peak_level = float(np.max(np.abs(audio))) if audio.size else 0.0
@@ -182,14 +185,66 @@ class DictationApp:
                 self._processing = False
                 self._processing_started_at = None
             self._cleanup_recording(audio_path if "audio_path" in locals() else None)
+            self._cleanup_old_recordings()
+
+    def _stop_recorder_with_timeout(self) -> Path:
+        timeout_s = self.config.transcription.recording_stop_timeout_seconds
+        result_queue: queue.Queue[tuple[str, Path | BaseException]] = queue.Queue(maxsize=1)
+        recorder = self.recorder
+
+        def stop_recorder() -> None:
+            try:
+                result_queue.put(("ok", recorder.stop()))
+            except BaseException as exc:  # noqa: BLE001
+                result_queue.put(("error", exc))
+
+        stop_thread = threading.Thread(
+            target=stop_recorder,
+            name="dictation-recorder-stop",
+            daemon=True,
+        )
+        stop_thread.start()
+        stop_thread.join(timeout_s)
+
+        if stop_thread.is_alive():
+            self.logger.error(
+                "Timed out stopping audio recorder after %.1fs; discarding this recording",
+                timeout_s,
+            )
+            self.recorder = self._new_recorder()
+            raise TimeoutError(f"Timed out stopping audio recorder after {timeout_s:.1f}s")
+
+        status, payload = result_queue.get_nowait()
+        if status == "error":
+            raise payload
+        return payload
 
     def _cleanup_recording(self, audio_path: Path | None) -> None:
         if self._keep_recordings or not audio_path or not audio_path.is_file():
             return
         audio_path.unlink(missing_ok=True)
 
+    def _cleanup_old_recordings(self) -> None:
+        retention_hours = self.config.transcription.recording_retention_hours
+        if retention_hours <= 0:
+            return
+
+        cutoff = time.time() - (retention_hours * 60 * 60)
+        for audio_path in RECORDINGS_DIR.glob("*.wav"):
+            try:
+                if audio_path.is_file() and audio_path.stat().st_mtime < cutoff:
+                    audio_path.unlink(missing_ok=True)
+                    self.logger.info(
+                        "Deleted retained recording older than %.1f hours: %s",
+                        retention_hours,
+                        audio_path,
+                    )
+            except OSError as exc:
+                self.logger.warning("Failed to delete old recording %s: %s", audio_path, exc)
+
     def run(self) -> None:
         ensure_app_dirs()
+        self._cleanup_old_recordings()
         self.logger.info("Dictation Router started")
         self.logger.info(
             "Insert: %s  (%s)",

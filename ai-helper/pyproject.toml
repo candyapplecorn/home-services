@@ -1,0 +1,36 @@
+[project]
+name = "ai-helper-service"
+version = "0.1.0"
+description = "Local Gemma-backed command line helper"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+local = [
+    "accelerate>=1.0",
+    "kagglehub>=0.3",
+    "pillow>=10.0",
+    "torch>=2.5",
+    "torchvision>=0.20",
+    "transformers>=4.57",
+]
+voice = [
+    "numpy>=1.26",
+    "sounddevice>=0.5",
+    "soundfile>=0.12",
+]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+ai-helper = "ai_helper_service.main:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

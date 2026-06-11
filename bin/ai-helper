@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Run the ai-helper CLI from its repo-managed virtual environment.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+AI_HELPER_DIR="${HOME_SERVICES_AI_HELPER_DIR:-$ROOT/ai-helper}"
+AI_HELPER_BIN="$AI_HELPER_DIR/.venv/bin/ai-helper"
+DEFAULT_MODEL_DIR="$HOME/Library/Application Support/HomeServices/ai-helper/models/gemma-4-e4b-it"
+
+if [[ "${1:-}" == "install-model" ]]; then
+  source_path="${2:-}"
+  if [[ -z "$source_path" ]]; then
+    cat >&2 <<EOF
+Usage:
+  ai-helper install-model /path/to/downloaded/gemma-4-e4b-it
+
+The source directory must contain config.json, tokenizer.json, and model.safetensors.
+EOF
+    exit 2
+  fi
+
+  source_path="${source_path/#\~/$HOME}"
+  if [[ ! -d "$source_path" ]]; then
+    echo "ai-helper: source directory not found: $source_path" >&2
+    exit 1
+  fi
+
+  for file in config.json tokenizer.json model.safetensors; do
+    if [[ ! -f "$source_path/$file" ]]; then
+      echo "ai-helper: missing $file in $source_path" >&2
+      exit 1
+    fi
+  done
+
+  mkdir -p "$(dirname "$DEFAULT_MODEL_DIR")"
+  rm -rf "$DEFAULT_MODEL_DIR"
+  ditto "$source_path" "$DEFAULT_MODEL_DIR"
+  echo "ai-helper: installed model to $DEFAULT_MODEL_DIR"
+  exit 0
+fi
+
+if [[ ! -x "$AI_HELPER_BIN" ]]; then
+  cat >&2 <<EOF
+ai-helper: not installed.
+Run:
+  cd "$ROOT"
+  ./install.sh
+
+For local Gemma + voice dependencies:
+  ./install.sh --ai-helper-local
+EOF
+  exit 1
+fi
+
+exec "$AI_HELPER_BIN" "$@"

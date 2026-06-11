@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import time
 
 import pytest
@@ -152,3 +153,63 @@ def test_stale_processing_state_resets_on_next_hotkey():
     assert app._processing is False
     assert app._active_mode == RoutingMode.INSERT
     recorder.start.assert_called_once()
+
+
+def test_finish_recording_recovers_when_recorder_stop_hangs():
+    from unittest.mock import MagicMock
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+
+    config = AppConfig()
+    config.transcription.recording_stop_timeout_seconds = 0.01
+    app = DictationApp(config, MagicMock())
+
+    old_recorder = MagicMock()
+
+    def hang_stop():
+        time.sleep(1)
+
+    old_recorder.stop.side_effect = hang_stop
+    new_recorder = MagicMock()
+    app.recorder = old_recorder
+    app._new_recorder = MagicMock(return_value=new_recorder)
+    app.feedback = MagicMock()
+    app._processing = True
+    app._processing_started_at = time.monotonic()
+
+    app._finish_recording(RoutingMode.INSERT)
+
+    assert app.recorder is new_recorder
+    assert app._processing is False
+    assert app._processing_started_at is None
+    app.feedback.error.assert_called_once()
+
+
+def test_cleanup_old_recordings_respects_retention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from unittest.mock import MagicMock
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+
+    old_recording = tmp_path / "old.wav"
+    recent_recording = tmp_path / "recent.wav"
+    old_note = tmp_path / "old.txt"
+    old_recording.write_bytes(b"old")
+    recent_recording.write_bytes(b"recent")
+    old_note.write_text("leave me", encoding="utf-8")
+
+    old_mtime = time.time() - (25 * 60 * 60)
+    os.utime(old_recording, (old_mtime, old_mtime))
+    os.utime(old_note, (old_mtime, old_mtime))
+
+    config = AppConfig()
+    config.transcription.recording_retention_hours = 24
+    app = DictationApp(config, MagicMock())
+    monkeypatch.setattr("dictation_router.app.RECORDINGS_DIR", tmp_path)
+
+    app._cleanup_old_recordings()
+
+    assert not old_recording.exists()
+    assert recent_recording.exists()
+    assert old_note.exists()

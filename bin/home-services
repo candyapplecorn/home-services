@@ -7,6 +7,7 @@ SESSION="${JOES_SERVICES_TMUX_SESSION:-home-services}"
 PATH_PREFIX="${JOES_SERVICES_PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
 DICTATION_DIR="${JOES_SERVICES_DICTATION_DIR:-$ROOT/dictation}"
 MOVIEWATCH_SCRIPT="${JOES_SERVICES_MOVIEWATCH_SCRIPT:-$ROOT/moviewatch/moviewatch2.sh}"
+AI_HELPER_BIN="${HOME_SERVICES_AI_HELPER_BIN:-$ROOT/bin/ai-helper}"
 APP_SUPPORT="${HOME_SERVICES_APP_SUPPORT:-$HOME/Library/Application Support/HomeServices}"
 LOG_DIR="$APP_SUPPORT/logs"
 MOVIEWATCH_LOG="$LOG_DIR/moviewatch.log"
@@ -25,6 +26,7 @@ Usage:
   home-services attach          Attach to the tmux session
   home-services logs            Print log file paths
   home-services doctor          Check runtime dependencies
+  home-services ai-helper ...   Run the experimental on-demand AI helper
   home-services open-config     Open dictation/config.yaml
   home-services open-logs       Open the HomeServices log directory
   home-services -a              Backward-compatible alias for attach
@@ -141,6 +143,7 @@ logs_services() {
   echo "dictation_logs=$HOME/Library/Application Support/DictationRouter/logs"
   echo "dictation_transcripts=$HOME/Library/Application Support/DictationRouter/transcripts"
   echo "moviewatch_log=$MOVIEWATCH_LOG"
+  echo "experimental_ai_helper_recordings=$HOME/Library/Application Support/HomeServices/ai-helper/recordings"
 }
 
 doctor_services() {
@@ -176,6 +179,12 @@ doctor_services() {
   check_path moviewatch "$MOVIEWATCH_SCRIPT"
   check_path "default Whisper model" "$HOME/.cache/whisper-cpp/ggml-medium.en.bin"
 
+  if [[ -x "$AI_HELPER_BIN" ]]; then
+    echo "experimental: ai-helper wrapper present ($AI_HELPER_BIN)"
+  else
+    echo "experimental: ai-helper wrapper not installed"
+  fi
+
   if (( failed )); then
     echo "home-services: doctor found missing items"
     exit 1
@@ -192,6 +201,10 @@ open_logs() {
   open "$LOG_DIR"
 }
 
+run_ai_helper() {
+  exec "$AI_HELPER_BIN" "$@"
+}
+
 cmd="${1:-start}"
 case "$cmd" in
   start) start_services ;;
@@ -202,6 +215,7 @@ case "$cmd" in
   attach) attach_services ;;
   logs) logs_services ;;
   doctor) doctor_services ;;
+  ai-helper) shift; run_ai_helper "$@" ;;
   open-config) open_config ;;
   open-logs) open_logs ;;
   -a|--attach) attach_services ;;

@@ -8,6 +8,17 @@ Personal always-on macOS services, managed as one repo and launched together in 
 |---------|-----------|-------------|
 | `dictation-router` | `dictation/` | Local Whisper dictation with global hotkeys |
 | `moviewatch` | `moviewatch/` | Watches `~/Documents` for `.mov` files and converts short videos to `.webm` |
+| `ai-helper` | `ai-helper/` | Experimental local Gemma helper; in progress and not part of the default services |
+
+## Roadmap
+
+- `ai-helper` is in progress and not ready for daily use. The current
+  Transformers/Gemma path can consume enough memory on an M-series MacBook to
+  interfere with dictation, so it is opt-in only and is not installed, started,
+  or checked by the default service workflow.
+- Before enabling `ai-helper` as a supported service, switch it to a smaller or
+  quantized local runtime and verify it can run without destabilizing
+  `dictation-router`.
 
 ## macOS Setup
 
@@ -31,7 +42,87 @@ The installer uses Homebrew to install:
 - `ffmpeg`
 - `whisper-cpp`
 
-It also creates `dictation/.venv` and installs the dictation app in editable mode.
+It creates `dictation/.venv` and installs the supported dictation app in
+editable mode. `moviewatch` runs from its shell script.
+
+The AI helper is experimental and is skipped by the default installer. Install
+the larger local AI runtime dependencies only when intentionally working on that
+roadmap item:
+
+```bash
+./install.sh --ai-helper-local
+```
+
+That installs Torch, Transformers, Hugging Face tooling, and microphone/audio
+packages. It does **not** download Gemma itself. To download the default Gemma
+model into the Hugging Face cache for experimentation, run:
+
+```bash
+./install.sh --download-ai-model
+```
+
+This can download many gigabytes. The current default `google/gemma-4-E4B-it`
+model has a 16 GB `model.safetensors` file, plus tokenizer/config files. The
+installer requires 30 GB free in the Hugging Face cache location before it starts
+the download. Override that cache with `HF_HOME=/path/with/space` if needed.
+
+If Hugging Face requires authentication or license acceptance, log in first:
+
+```bash
+~/bin/home-services/ai-helper/.venv/bin/hf auth login
+```
+
+Some corporate networks block Hugging Face's Xet/CAS bridge for large files.
+The installer disables the local Xet client for AI model downloads, but some
+Xet-backed Hugging Face repos can still redirect large files through
+`cas-bridge.xethub.hf.co`. If that URL is blocked, use a smaller model, download
+from a non-corporate network, or request a web filtering exception. To retry the
+download manually with Xet disabled:
+
+```bash
+HF_HUB_DISABLE_XET=1 ~/bin/home-services/ai-helper/.venv/bin/python -c \
+  'from huggingface_hub import snapshot_download; print(snapshot_download("google/gemma-4-E4B-it"))'
+```
+
+Kaggle is a known fallback when the Hugging Face Xet/CAS path is blocked:
+
+```text
+https://www.kaggle.com/models/google/gemma-4/transformers/gemma-4-e4b-it
+```
+
+After downloading and extracting the Kaggle model, install it into HomeServices'
+standard model location. Use the extracted directory that contains `config.json`,
+`tokenizer.json`, and `model.safetensors`:
+
+```bash
+~/bin/home-services/bin/ai-helper install-model /path/to/gemma-4-e4b-it
+```
+
+That copies the model to:
+
+```text
+~/Library/Application Support/HomeServices/ai-helper/models/gemma-4-e4b-it
+```
+
+If you have Kaggle credentials configured locally, `ai-helper` can also resolve
+the Kaggle model handle directly:
+
+```bash
+export AI_HELPER_MODEL="kaggle://google/gemma-4/transformers/gemma-4-e4b-it"
+ai-helper "Give me a one-line ripgrep example"
+```
+
+Use a different model id with:
+
+```bash
+HOME_SERVICES_AI_HELPER_MODEL=google/gemma-4-12B-it ./install.sh --download-ai-model
+```
+
+For less disk pressure on a MacBook, start with the smaller E2B model:
+
+```bash
+HOME_SERVICES_AI_HELPER_MODEL=google/gemma-4-E2B-it ./install.sh --download-ai-model
+```
 
 ## Whisper Model
 
@@ -91,7 +182,9 @@ dictation-router
 moviewatch2.sh
 ```
 
-Detach without stopping services with `Ctrl+b`, then `d`.
+`ai-helper` is intentionally not in the tmux layout because Gemma should not stay
+loaded in memory all day. Detach without stopping services with `Ctrl+b`, then
+`d`.
 
 ## Shell Alias
 
@@ -152,6 +245,38 @@ hotkeys:
   review: "cmd+alt+ctrl+r"
   clean: "cmd+alt+ctrl+c"
 ```
+
+### Experimental AI Helper
+
+`ai-helper` is a roadmap item, not a supported service yet. These notes are for
+future development and local experiments only.
+
+AI helper settings are environment variables. The default model path is the
+HomeServices app-support model directory:
+
+```bash
+export AI_HELPER_MODEL="$HOME/Library/Application Support/HomeServices/ai-helper/models/gemma-4-e4b-it"
+export AI_HELPER_MAX_NEW_TOKENS=512
+export AI_HELPER_WHISPER_MODEL=medium.en
+```
+
+For a model downloaded from Hugging Face, point `AI_HELPER_MODEL` at the local
+model id or local model directory:
+
+```bash
+export AI_HELPER_MODEL="google/gemma-4-E4B-it"
+export AI_HELPER_MODEL="$HOME/.cache/huggingface/hub/path-to-gemma-4-E4B-it"
+```
+
+Experimental voice mode uses the same `whisper-cli` runtime and default model
+path as the dictation service:
+
+```bash
+ai-helper --voice
+```
+
+Press Enter to start recording, press Enter again to stop, then the transcript is
+sent to Gemma and the response is printed to stdout.
 
 ## Transcription limits (why content goes missing)
 
