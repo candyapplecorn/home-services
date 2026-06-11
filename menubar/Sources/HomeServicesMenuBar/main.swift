@@ -190,12 +190,25 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func runInTerminal(_ commandName: String) {
         let command = "\(shellQuote(runner.rootPath))/bin/home-services \(commandName)"
-        let script = """
-        tell application "Terminal"
-          do script "\(escapeAppleScript(command))"
-          activate
-        end tell
-        """
+        let script: String
+        if FileManager.default.fileExists(atPath: "/Applications/iTerm.app") {
+            script = """
+            tell application "iTerm"
+              create window with default profile
+              tell current session of current window
+                write text "\(escapeAppleScript(command))"
+              end tell
+              activate
+            end tell
+            """
+        } else {
+            script = """
+            tell application "Terminal"
+              do script "\(escapeAppleScript(command))"
+              activate
+            end tell
+            """
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]
