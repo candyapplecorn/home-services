@@ -151,10 +151,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func stopServices() {
+        guard confirmDestructiveAction(title: "Stop Home Services?", message: "This will stop the running tmux session and all services in it.") else {
+            return
+        }
         runner.run(["stop"]) { [weak self] _, _ in self?.refreshStatus() }
     }
 
     @objc private func restartServices() {
+        guard confirmDestructiveAction(title: "Restart Home Services?", message: "This will stop the running tmux session and start a new one.") else {
+            return
+        }
         runner.run(["restart"]) { [weak self] _, _ in self?.refreshStatus() }
     }
 
@@ -198,6 +204,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "OK")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
+    }
+
+    private func confirmDestructiveAction(title: String, message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Continue")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertSecondButtonReturn
     }
 }
 
