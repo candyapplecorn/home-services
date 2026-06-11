@@ -27,11 +27,7 @@ class DictationApp:
         self.config = config
         self.logger = logger
         self.feedback = AudioFeedback()
-        self.recorder = AudioRecorder(
-            sample_rate=config.audio.sample_rate,
-            channels=config.audio.channels,
-            device=config.audio.device,
-        )
+        self.recorder = self._new_recorder()
         self.transcriber = WhisperCppTranscriber(
             model=config.transcription.model,
             whisper_cli=config.transcription.whisper_cli,
@@ -48,6 +44,7 @@ class DictationApp:
         self._lock = threading.Lock()
         self._active_mode: RoutingMode | None = None
         self._processing = False
+        self._processing_started_at: float | None = None
         self._keep_recordings = config.transcription.keep_recordings
         self._min_chars_per_minute = config.transcription.min_chars_per_minute
         self._hotkeys = HotkeyManager(
@@ -58,11 +55,33 @@ class DictationApp:
             }
         )
 
+    def _new_recorder(self) -> AudioRecorder:
+        return AudioRecorder(
+            sample_rate=self.config.audio.sample_rate,
+            channels=self.config.audio.channels,
+            device=self.config.audio.device,
+        )
+
     def _on_hotkey(self, mode: RoutingMode) -> None:
         with self._lock:
             if self._processing:
-                self.logger.info("Ignoring hotkey while processing")
-                return
+                elapsed = (
+                    time.monotonic() - self._processing_started_at
+                    if self._processing_started_at is not None
+                    else 0
+                )
+                if elapsed < self.config.transcription.processing_timeout_seconds:
+                    self.logger.info("Ignoring hotkey while processing")
+                    return
+
+                self.logger.error(
+                    "Processing appears stuck after %.1fs; resetting state and starting a new recording",
+                    elapsed,
+                )
+                self._processing = False
+                self._processing_started_at = None
+                self._active_mode = None
+                self.recorder = self._new_recorder()
 
             if not self.recorder.is_recording:
                 self._active_mode = mode
@@ -84,6 +103,7 @@ class DictationApp:
                     mode.value,
                 )
             self._processing = True
+            self._processing_started_at = time.monotonic()
 
         threading.Thread(
             target=self._finish_recording,
@@ -158,6 +178,7 @@ class DictationApp:
             with self._lock:
                 self._active_mode = None
                 self._processing = False
+                self._processing_started_at = None
             self._cleanup_recording(audio_path if "audio_path" in locals() else None)
 
     def _cleanup_recording(self, audio_path: Path | None) -> None:

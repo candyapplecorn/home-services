@@ -12,6 +12,8 @@ transcription:
   # Whisper sometimes appends/prepends these short hallucinations near silence.
   edge_hallucinations:
     - you
+  # If audio/transcription gets stuck, the next hotkey after this delay resets processing.
+  processing_timeout_seconds: 120
 
 routing:
   # Use clipboard paste above this length (typing long text is slow/unreliable)

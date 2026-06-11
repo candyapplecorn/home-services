@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 import pytest
 import yaml
@@ -127,3 +128,27 @@ def test_stop_recording_accepts_any_hotkey():
 
     assert finished_modes == [RoutingMode.INSERT]
     assert app._processing is True
+
+
+def test_stale_processing_state_resets_on_next_hotkey():
+    from unittest.mock import MagicMock
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+
+    config = AppConfig()
+    config.transcription.processing_timeout_seconds = 1
+    app = DictationApp(config, MagicMock())
+    recorder = MagicMock()
+    recorder.is_recording = False
+    app.recorder = recorder
+    app._new_recorder = MagicMock(return_value=recorder)
+    app.feedback = MagicMock()
+    app._processing = True
+    app._processing_started_at = time.monotonic() - 2
+
+    app._on_hotkey(RoutingMode.INSERT)
+
+    assert app._processing is False
+    assert app._active_mode == RoutingMode.INSERT
+    recorder.start.assert_called_once()

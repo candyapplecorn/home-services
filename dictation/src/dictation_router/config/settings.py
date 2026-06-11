@@ -31,6 +31,7 @@ class TranscriptionConfig:
     logprob_threshold: float = -1.0
     min_chars_per_minute: float = 200.0
     edge_hallucinations: list[str] = field(default_factory=lambda: ["you"])
+    processing_timeout_seconds: float = 120.0
 
 
 @dataclass
@@ -97,6 +98,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             logprob_threshold=float(transcription_raw.get("logprob_threshold", -1.0)),
             min_chars_per_minute=float(transcription_raw.get("min_chars_per_minute", 200.0)),
             edge_hallucinations=list(transcription_raw.get("edge_hallucinations", ["you"])),
+            processing_timeout_seconds=float(transcription_raw.get("processing_timeout_seconds", 120.0)),
         ),
         routing=RoutingConfig(
             max_typing_chars=int(routing_raw.get("max_typing_chars", 500)),

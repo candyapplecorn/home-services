@@ -61,9 +61,10 @@ class AudioRecorder:
             self._recording = False
 
         if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
+            stream = self._stream
             self._stream = None
+            stream.abort()
+            stream.close()
 
         with self._lock:
             if not self._frames:
