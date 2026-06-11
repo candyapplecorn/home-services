@@ -125,6 +125,22 @@ Deliverable: a short recommendation memo identifying which features are worth ad
 - Add optional local LLM cleanup if latency and quality justify it.
 - Add searchable transcript and recording archive with retention controls.
 
+### Conversational Voice Assistant
+
+Add a future voice-output layer so `home-services` can speak responses back to the user, evolving dictation from speech-to-text into a conversational voice workflow without tying the design to any specific LLM.
+
+Likely workstreams:
+
+- Evaluate text-to-speech engines for quality, latency, cost, licensing, offline support, and macOS integration.
+- Decide where local voices, cloud voices, or a hybrid model make sense.
+- Design playback UX for spoken responses, status sounds, volume, output device selection, and mute controls.
+- Support interruption and barge-in so the user can stop, revise, or redirect a spoken response naturally.
+- Add conversation state for short-lived assistant turns while keeping transcript, prompt, and retention behavior explicit.
+- Define privacy controls for what audio, transcripts, prompts, and generated responses are stored or sent off-device.
+- Integrate voice assistant controls with dictation hotkeys, the menu bar app, tmux/no-GUI workflows, and service status.
+- Set latency budgets and safety guardrails for spoken actions, confirmations, and potentially sensitive responses.
+- Keep the assistant backend model-agnostic; local LLMs such as Gemma can be explored later, but the milestone should focus first on voice output and conversational interaction primitives.
+
 ### Moviewatch Evolution
 
 - Expand into a general media automation service if useful: watch folders, conversion presets, failure queue, manual retry, and notifications.
