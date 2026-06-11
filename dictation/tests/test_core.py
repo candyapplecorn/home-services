@@ -155,8 +155,8 @@ def test_stale_processing_state_resets_on_next_hotkey():
     recorder.start.assert_called_once()
 
 
-def test_finish_recording_recovers_when_recorder_stop_hangs():
-    from unittest.mock import MagicMock
+def test_finish_recording_restarts_process_when_recorder_stop_hangs():
+    from unittest.mock import MagicMock, patch
 
     from dictation_router.app import DictationApp
     from dictation_router.config.settings import AppConfig
@@ -171,18 +171,17 @@ def test_finish_recording_recovers_when_recorder_stop_hangs():
         time.sleep(1)
 
     old_recorder.stop.side_effect = hang_stop
-    new_recorder = MagicMock()
     app.recorder = old_recorder
-    app._new_recorder = MagicMock(return_value=new_recorder)
     app.feedback = MagicMock()
     app._processing = True
     app._processing_started_at = time.monotonic()
 
-    app._finish_recording(RoutingMode.INSERT)
+    with patch("dictation_router.app.os._exit") as exit_mock:
+        app._finish_recording(RoutingMode.INSERT)
 
-    assert app.recorder is new_recorder
     assert app._processing is False
     assert app._processing_started_at is None
+    exit_mock.assert_called_once_with(75)
     app.feedback.error.assert_called_once()
 
 

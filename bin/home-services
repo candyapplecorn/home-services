@@ -76,7 +76,7 @@ start_services() {
   fi
 
   local dictation_cmd moviewatch_cmd win pane_dictation pane_moviewatch
-  dictation_cmd="export PATH=$PATH_PREFIX; cd $(printf '%q' "$DICTATION_DIR") && exec $(printf '%q' "$DICTATION_DIR/.venv/bin/dictation-router")"
+  dictation_cmd="export PATH=$PATH_PREFIX; cd $(printf '%q' "$DICTATION_DIR") && while true; do $(printf '%q' "$DICTATION_DIR/.venv/bin/dictation-router"); status=\$?; echo \"home-services: dictation-router exited with status \$status; restarting in 2s\" >&2; sleep 2; done"
   moviewatch_cmd="export PATH=$PATH_PREFIX; $(printf '%q' "$MOVIEWATCH_SCRIPT") 2>&1 | tee -a $(printf '%q' "$MOVIEWATCH_LOG")"
   win="${SESSION}:services"
 

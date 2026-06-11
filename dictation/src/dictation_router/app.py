@@ -207,11 +207,13 @@ class DictationApp:
         stop_thread.join(timeout_s)
 
         if stop_thread.is_alive():
-            self.logger.error(
-                "Timed out stopping audio recorder after %.1fs; discarding this recording",
+            self.logger.critical(
+                "Timed out stopping audio recorder after %.1fs; restarting dictation process",
                 timeout_s,
             )
-            self.recorder = self._new_recorder()
+            for handler in self.logger.handlers:
+                handler.flush()
+            os._exit(75)
             raise TimeoutError(f"Timed out stopping audio recorder after {timeout_s:.1f}s")
 
         status, payload = result_queue.get_nowait()
