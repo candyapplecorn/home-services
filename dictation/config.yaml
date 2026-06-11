@@ -9,6 +9,9 @@ transcription:
   logprob_threshold: -1.0
   # Warn when transcript density suggests dropped 30s windows
   min_chars_per_minute: 200
+  # Whisper sometimes appends/prepends these short hallucinations near silence.
+  edge_hallucinations:
+    - you
 
 routing:
   # Use clipboard paste above this length (typing long text is slow/unreliable)

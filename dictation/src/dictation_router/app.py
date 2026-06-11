@@ -13,6 +13,7 @@ from dictation_router.config.settings import AppConfig, RoutingMode, ensure_app_
 from dictation_router.routing.editor import EditorLauncher
 from dictation_router.routing.inserter import TextInserter
 from dictation_router.routing.router import Router
+from dictation_router.transcription.postprocess import strip_edge_hallucinations
 from dictation_router.transcription.whisper_cpp import WhisperCppTranscriber
 from dictation_router.ui.feedback import AudioFeedback
 from dictation_router.ui.hotkeys import HotkeyManager
@@ -118,6 +119,15 @@ class DictationApp:
 
             started = time.perf_counter()
             transcript = self.transcriber.transcribe(audio_path)
+            transcript, removed_hallucinations = strip_edge_hallucinations(
+                transcript,
+                self.config.transcription.edge_hallucinations,
+            )
+            if removed_hallucinations:
+                self.logger.info(
+                    "Removed likely edge hallucination(s): %s",
+                    ", ".join(removed_hallucinations),
+                )
             elapsed = time.perf_counter() - started
             self.logger.info(
                 "Transcription completed in %.2fs (%d chars, %.0f chars/min of audio)",
@@ -135,7 +145,9 @@ class DictationApp:
                         chars_per_min,
                     )
 
-            if mode is not None:
+            if not transcript:
+                self.logger.warning("Transcript empty after post-processing; skipping routing")
+            elif mode is not None:
                 self.router.route(transcript, mode)
 
             self.feedback.transcription_complete()

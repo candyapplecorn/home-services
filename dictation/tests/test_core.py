@@ -6,6 +6,7 @@ import yaml
 from dictation_router.config.settings import RoutingMode, load_config
 from dictation_router.routing.cleaner import clean_transcript
 from dictation_router.routing.router import Router
+from dictation_router.transcription.postprocess import strip_edge_hallucinations
 from dictation_router.ui.hotkeys import parse_hotkey
 
 
@@ -27,6 +28,30 @@ def test_clean_transcript_removes_duplicates_and_capitalizes():
     assert "hello hello" not in cleaned
     assert cleaned[0].isupper()
     assert cleaned.endswith(".")
+
+
+def test_strip_edge_hallucinations_removes_trailing_glued_you():
+    cleaned, removed = strip_edge_hallucinations("I just don't want to eat pieyou", ["you"])
+    assert cleaned == "I just don't want to eat pie"
+    assert removed == ["you"]
+
+
+def test_strip_edge_hallucinations_preserves_internal_you():
+    cleaned, removed = strip_edge_hallucinations("Can you please stop screaming at meyou", ["you"])
+    assert cleaned == "Can you please stop screaming at me"
+    assert removed == ["you"]
+
+
+def test_strip_edge_hallucinations_removes_standalone_edges():
+    cleaned, removed = strip_edge_hallucinations("you Okay this time it worked you", ["you"])
+    assert cleaned == "Okay this time it worked"
+    assert removed == ["you", "you"]
+
+
+def test_strip_edge_hallucinations_removes_only_you():
+    cleaned, removed = strip_edge_hallucinations("you", ["you"])
+    assert cleaned == ""
+    assert removed == ["you"]
 
 
 def test_load_config(tmp_path: Path):
