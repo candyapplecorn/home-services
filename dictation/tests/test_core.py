@@ -8,7 +8,10 @@ import yaml
 from dictation_router.config.settings import RoutingMode, load_config
 from dictation_router.routing.cleaner import clean_transcript
 from dictation_router.routing.router import Router
-from dictation_router.transcription.postprocess import strip_edge_hallucinations
+from dictation_router.transcription.postprocess import (
+    normalize_transcript_newlines,
+    strip_edge_hallucinations,
+)
 from dictation_router.ui.hotkeys import parse_hotkey
 
 
@@ -54,6 +57,34 @@ def test_strip_edge_hallucinations_removes_only_you():
     cleaned, removed = strip_edge_hallucinations("you", ["you"])
     assert cleaned == ""
     assert removed == ["you"]
+
+
+def test_normalize_transcript_newlines_joins_accidental_prose_breaks():
+    raw = (
+        "a really stupid AI would\n"
+        "\u00a0be able to do that but unfortunately it takes RAM. "
+        "The only problem then is if my\n"
+        "\u00a0is it would be like having a remote connection."
+    )
+
+    assert normalize_transcript_newlines(raw) == (
+        "a really stupid AI would be able to do that but unfortunately it takes RAM. "
+        "The only problem then is if my is it would be like having a remote connection."
+    )
+
+
+def test_normalize_transcript_newlines_preserves_blank_line_paragraphs():
+    raw = "First paragraph wraps\ninside one thought.\n\nSecond paragraph stays separate."
+
+    assert normalize_transcript_newlines(raw) == (
+        "First paragraph wraps inside one thought.\n\nSecond paragraph stays separate."
+    )
+
+
+def test_normalize_transcript_newlines_preserves_list_blocks():
+    raw = "- first item\n- second item\n- third item"
+
+    assert normalize_transcript_newlines(raw) == raw
 
 
 def test_load_config(tmp_path: Path):

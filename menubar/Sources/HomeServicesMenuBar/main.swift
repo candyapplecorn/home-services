@@ -63,6 +63,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
     private var statusLine = "Checking..."
+    private var dictationState = "unknown"
     private var detailLines: [String] = []
     private var timer: Timer?
 
@@ -73,7 +74,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
         rebuildMenu()
         refreshStatus()
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshStatus()
             }
@@ -88,9 +89,19 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         runner.run(["status"]) { [weak self] status, output in
             guard let self else { return }
             let lines = output.split(separator: "\n").map(String.init)
+            let state = lines.first { $0.hasPrefix("dictation_state=") }?
+                .replacingOccurrences(of: "dictation_state=", with: "")
+            self.dictationState = state ?? "unknown"
+
             if let first = lines.first {
                 if first == "status=running" {
-                    self.statusLine = "Running"
+                    if self.dictationState == "recording" {
+                        self.statusLine = "Recording"
+                    } else if self.dictationState == "processing" {
+                        self.statusLine = "Processing"
+                    } else {
+                        self.statusLine = "Running"
+                    }
                 } else if first == "status=stopped" {
                     self.statusLine = "Stopped"
                 } else if first == "status=missing-tmux" {
@@ -101,9 +112,51 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 self.statusLine = status == 0 ? "Running" : "Unavailable"
             }
-            self.detailLines = Array(lines.dropFirst())
-            self.statusItem.button?.title = self.statusLine == "Running" ? "HS" : "HS!"
+            self.detailLines = Array(lines.dropFirst()).filter { !$0.hasPrefix("dictation_state=") }
+            self.updateStatusButton()
             self.rebuildMenu()
+        }
+    }
+
+    private func updateStatusButton() {
+        switch dictationState {
+        case "recording":
+            setStatusSymbol(
+                "record.circle.fill",
+                fallback: "REC",
+                tint: .systemRed,
+                tooltip: "Home Services: Recording"
+            )
+        case "processing":
+            setStatusSymbol(
+                "hourglass",
+                fallback: "...",
+                tint: .systemOrange,
+                tooltip: "Home Services: Processing"
+            )
+        default:
+            guard let button = statusItem.button else { return }
+            button.image = nil
+            button.imagePosition = .noImage
+            button.contentTintColor = nil
+            button.title = statusLine == "Running" ? "HS" : "HS!"
+            button.toolTip = "Home Services: \(statusLine)"
+        }
+    }
+
+    private func setStatusSymbol(_ symbolName: String, fallback: String, tint: NSColor, tooltip: String) {
+        guard let button = statusItem.button else { return }
+        button.toolTip = tooltip
+        button.contentTintColor = tint
+        if let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: tooltip) {
+            image.isTemplate = true
+            button.image = image
+            button.imagePosition = .imageOnly
+            button.title = ""
+        } else {
+            button.image = nil
+            button.imagePosition = .noImage
+            button.title = fallback
         }
     }
 

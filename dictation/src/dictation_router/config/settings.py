@@ -12,6 +12,7 @@ APP_SUPPORT = Path.home() / "Library/Application Support/DictationRouter"
 TRANSCRIPTS_DIR = APP_SUPPORT / "transcripts"
 LOGS_DIR = APP_SUPPORT / "logs"
 RECORDINGS_DIR = APP_SUPPORT / "recordings"
+STATE_FILE = APP_SUPPORT / "state"
 
 
 class RoutingMode(str, Enum):

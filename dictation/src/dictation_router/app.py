@@ -12,11 +12,20 @@ import numpy as np
 import soundfile as sf
 
 from dictation_router.audio.recorder import AudioRecorder
-from dictation_router.config.settings import AppConfig, RECORDINGS_DIR, RoutingMode, ensure_app_dirs
+from dictation_router.config.settings import (
+    RECORDINGS_DIR,
+    STATE_FILE,
+    AppConfig,
+    RoutingMode,
+    ensure_app_dirs,
+)
 from dictation_router.routing.editor import EditorLauncher
 from dictation_router.routing.inserter import TextInserter
 from dictation_router.routing.router import Router
-from dictation_router.transcription.postprocess import strip_edge_hallucinations
+from dictation_router.transcription.postprocess import (
+    normalize_transcript_newlines,
+    strip_edge_hallucinations,
+)
 from dictation_router.transcription.whisper_cpp import WhisperCppTranscriber
 from dictation_router.ui.feedback import AudioFeedback
 from dictation_router.ui.hotkeys import HotkeyManager
@@ -91,10 +100,12 @@ class DictationApp:
                 self.logger.info("Recording started (%s mode)", mode.value)
                 try:
                     self.recorder.start()
+                    self._write_activity_state("recording")
                     self.feedback.recording_started()
                 except Exception as exc:
                     self.logger.exception("Failed to start recording: %s", exc)
                     self.feedback.error()
+                    self._write_activity_state("idle")
                     self._active_mode = None
                 return
 
@@ -107,6 +118,7 @@ class DictationApp:
                 )
             self._processing = True
             self._processing_started_at = time.monotonic()
+            self._write_activity_state("processing")
 
         threading.Thread(
             target=self._finish_recording,
@@ -148,6 +160,7 @@ class DictationApp:
                 transcript,
                 self.config.transcription.edge_hallucinations,
             )
+            transcript = normalize_transcript_newlines(transcript)
             if removed_hallucinations:
                 self.logger.info(
                     "Removed likely edge hallucination(s): %s",
@@ -184,8 +197,18 @@ class DictationApp:
                 self._active_mode = None
                 self._processing = False
                 self._processing_started_at = None
+            self._write_activity_state("idle")
             self._cleanup_recording(audio_path if "audio_path" in locals() else None)
             self._cleanup_old_recordings()
+
+    def _write_activity_state(self, state: str) -> None:
+        try:
+            ensure_app_dirs()
+            tmp_path = STATE_FILE.with_suffix(".tmp")
+            tmp_path.write_text(f"{state}\n", encoding="utf-8")
+            tmp_path.replace(STATE_FILE)
+        except OSError as exc:
+            self.logger.warning("Failed to write dictation activity state: %s", exc)
 
     def _stop_recorder_with_timeout(self) -> Path:
         timeout_s = self.config.transcription.recording_stop_timeout_seconds
@@ -246,6 +269,7 @@ class DictationApp:
 
     def run(self) -> None:
         ensure_app_dirs()
+        self._write_activity_state("idle")
         self._cleanup_old_recordings()
         self.logger.info("Dictation Router started")
         self.logger.info(
@@ -280,6 +304,7 @@ class DictationApp:
                 self._hotkeys.stop()
             except Exception:
                 self.logger.exception("Failed to stop hotkey listener during shutdown")
+            self._write_activity_state("idle")
             os._exit(128 + signum)
 
         signal.signal(signal.SIGINT, force_shutdown)

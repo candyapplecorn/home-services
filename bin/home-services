@@ -11,6 +11,7 @@ AI_HELPER_BIN="${HOME_SERVICES_AI_HELPER_BIN:-$ROOT/bin/ai-helper}"
 APP_SUPPORT="${HOME_SERVICES_APP_SUPPORT:-$HOME/Library/Application Support/HomeServices}"
 LOG_DIR="$APP_SUPPORT/logs"
 MOVIEWATCH_LOG="$LOG_DIR/moviewatch.log"
+DICTATION_STATE_FILE="$HOME/Library/Application Support/DictationRouter/state"
 
 usage() {
   cat <<EOF
@@ -125,6 +126,8 @@ attach_services() {
 }
 
 status_services() {
+  local dictation_state
+
   if ! tmux_exists; then
     echo "status=missing-tmux"
     exit 2
@@ -136,6 +139,10 @@ status_services() {
   fi
 
   echo "status=running"
+  if [[ -r "$DICTATION_STATE_FILE" ]]; then
+    dictation_state="$(sed -n '1p' "$DICTATION_STATE_FILE" | tr -d '[:space:]')"
+    [[ -n "$dictation_state" ]] && echo "dictation_state=$dictation_state"
+  fi
   tmux list-panes -t "${SESSION}:services" -F 'pane=#{pane_title} active=#{pane_active} command=#{pane_current_command}' 2>/dev/null || true
 }
 
