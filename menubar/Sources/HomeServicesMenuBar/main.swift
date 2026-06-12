@@ -211,6 +211,12 @@ private func displayHotkey(_ hotkey: String) -> String {
     parseMenuHotkey(hotkey)?.display ?? hotkey
 }
 
+private func copyToClipboard(_ text: String) {
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.setString(text, forType: .string)
+}
+
 private struct CrashAlert: Decodable {
     var id: String
     var type: String
@@ -235,16 +241,55 @@ private struct CrashAlert: Decodable {
     }
 }
 
+private func formatCrashAlert(_ alert: CrashAlert, sourceURL: URL? = nil) -> String {
+    var lines = [
+        alert.title,
+        "",
+        alert.message
+    ]
+    if let reason = alert.reason, !reason.isEmpty {
+        lines.append("")
+        lines.append("Reason: \(reason)")
+    }
+    if let jobId = alert.jobId, !jobId.isEmpty {
+        lines.append("Job: \(jobId)")
+    }
+    if let jobPath = alert.jobPath, !jobPath.isEmpty {
+        lines.append("Job path: \(jobPath)")
+    }
+    if let createdAt = alert.createdAt, !createdAt.isEmpty {
+        lines.append("Created: \(createdAt)")
+    }
+    if let sourceURL {
+        lines.append("Alert file: \(sourceURL.path)")
+    }
+    if let details = alert.details, !details.isEmpty {
+        lines.append("")
+        lines.append("[Details]")
+        lines.append(details)
+    }
+    return lines.joined(separator: "\n")
+}
+
 @MainActor
 private final class CrashAlertWindowController: NSWindowController, NSWindowDelegate {
     private let detailsScroll = NSScrollView()
     private let detailsButton = NSButton()
     private var detailsVisible = false
     private var didDismiss = false
+    private let alertText: String
+    private let alertURL: URL
     private let onDismiss: () -> Void
     private let openDiagnostics: () -> Void
 
-    init(alert: CrashAlert, onDismiss: @escaping () -> Void, openDiagnostics: @escaping () -> Void) {
+    init(
+        alert: CrashAlert,
+        alertURL: URL,
+        onDismiss: @escaping () -> Void,
+        openDiagnostics: @escaping () -> Void
+    ) {
+        self.alertText = formatCrashAlert(alert, sourceURL: alertURL)
+        self.alertURL = alertURL
         self.onDismiss = onDismiss
         self.openDiagnostics = openDiagnostics
 
@@ -288,6 +333,11 @@ private final class CrashAlertWindowController: NSWindowController, NSWindowDele
         reasonLabel.maximumNumberOfLines = 0
         reasonLabel.isHidden = alert.reason == nil
 
+        let jobLabel = NSTextField(labelWithString: alert.jobId.map { "Job: \($0)" } ?? "")
+        jobLabel.textColor = .secondaryLabelColor
+        jobLabel.lineBreakMode = .byTruncatingMiddle
+        jobLabel.isHidden = alert.jobId == nil
+
         let detailsView = NSTextView()
         detailsView.isEditable = false
         detailsView.isSelectable = true
@@ -295,10 +345,19 @@ private final class CrashAlertWindowController: NSWindowController, NSWindowDele
         detailsView.textColor = .labelColor
         detailsView.backgroundColor = .textBackgroundColor
         detailsView.textContainerInset = NSSize(width: 10, height: 10)
-        detailsView.string = alert.details ?? "No additional details were provided."
+        detailsView.isVerticallyResizable = true
+        detailsView.isHorizontallyResizable = false
+        detailsView.autoresizingMask = [.width]
+        detailsView.minSize = NSSize(width: 0, height: 0)
+        detailsView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        detailsView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        detailsView.textContainer?.widthTracksTextView = true
+        detailsView.frame = NSRect(x: 0, y: 0, width: 600, height: 220)
+        detailsView.string = alertText
 
         detailsScroll.hasVerticalScroller = true
         detailsScroll.hasHorizontalScroller = false
+        detailsScroll.autohidesScrollers = true
         detailsScroll.borderType = .bezelBorder
         detailsScroll.documentView = detailsView
         detailsScroll.isHidden = true
@@ -310,18 +369,24 @@ private final class CrashAlertWindowController: NSWindowController, NSWindowDele
         let diagnosticsButton = NSButton(title: "Open Diagnostics", target: self, action: #selector(openDiagnosticsWindow))
         diagnosticsButton.bezelStyle = .rounded
 
+        let copyButton = NSButton(title: "Copy Details", target: self, action: #selector(copyDetails))
+        copyButton.bezelStyle = .rounded
+
+        let openAlertButton = NSButton(title: "Open Alert File", target: self, action: #selector(openAlertFile))
+        openAlertButton.bezelStyle = .rounded
+
         detailsButton.title = "Show Details"
         detailsButton.target = self
         detailsButton.action = #selector(toggleDetails)
         detailsButton.bezelStyle = .rounded
 
-        let buttonRow = NSStackView(views: [diagnosticsButton, detailsButton, dismissButton])
+        let buttonRow = NSStackView(views: [diagnosticsButton, openAlertButton, copyButton, detailsButton, dismissButton])
         buttonRow.orientation = .horizontal
         buttonRow.alignment = .centerY
         buttonRow.distribution = .gravityAreas
         buttonRow.spacing = 10
 
-        let stack = NSStackView(views: [titleLabel, messageLabel, reasonLabel, detailsScroll, buttonRow])
+        let stack = NSStackView(views: [titleLabel, messageLabel, reasonLabel, jobLabel, detailsScroll, buttonRow])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
@@ -361,6 +426,14 @@ private final class CrashAlertWindowController: NSWindowController, NSWindowDele
         openDiagnostics()
     }
 
+    @objc private func copyDetails() {
+        copyToClipboard(alertText)
+    }
+
+    @objc private func openAlertFile() {
+        NSWorkspace.shared.open(alertURL)
+    }
+
     @objc private func dismissAlert() {
         window?.close()
     }
@@ -379,7 +452,14 @@ private final class DiagnosticsWindowController: NSWindowController, NSWindowDel
     private let runner: CommandRunner
     private let textView = NSTextView()
     private var sections: [String: String] = [:]
-    private let orderedSections = ["Status", "Startup", "Paths", "Doctor"]
+    private let orderedSections = [
+        "Status",
+        "Startup",
+        "Paths",
+        "Crash Alerts",
+        "Recent Dictation Log",
+        "Doctor"
+    ]
 
     init(runner: CommandRunner) {
         self.runner = runner
@@ -422,10 +502,24 @@ private final class DiagnosticsWindowController: NSWindowController, NSWindowDel
         )
         refreshButton.bezelStyle = .rounded
 
+        let copyButton = NSButton(
+            title: "Copy",
+            target: self,
+            action: #selector(copyButtonClicked)
+        )
+        copyButton.bezelStyle = .rounded
+
+        let openSnapshotButton = NSButton(
+            title: "Open Snapshot",
+            target: self,
+            action: #selector(openSnapshotButtonClicked)
+        )
+        openSnapshotButton.bezelStyle = .rounded
+
         let title = NSTextField(labelWithString: "Diagnostics")
         title.font = .boldSystemFont(ofSize: 18)
 
-        let header = NSStackView(views: [title, NSView(), refreshButton])
+        let header = NSStackView(views: [title, NSView(), copyButton, openSnapshotButton, refreshButton])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 12
@@ -475,17 +569,30 @@ private final class DiagnosticsWindowController: NSWindowController, NSWindowDel
         refresh()
     }
 
+    @objc private func copyButtonClicked() {
+        copyToClipboard(renderedDiagnostics())
+    }
+
+    @objc private func openSnapshotButtonClicked() {
+        let snapshotURL = writeSnapshot()
+        NSWorkspace.shared.open(snapshotURL)
+    }
+
     private func refresh() {
         sections = [
             "Status": "Loading...",
             "Startup": "Loading...",
             "Paths": "Loading...",
+            "Crash Alerts": "Loading...",
+            "Recent Dictation Log": "Loading...",
             "Doctor": "Loading..."
         ]
         render()
         loadSection(title: "Status", arguments: ["status"])
         loadSection(title: "Startup", arguments: ["startup-status"])
         loadSection(title: "Paths", arguments: ["logs"])
+        loadCrashAlertsSection()
+        loadRecentDictationLogSection()
         loadSection(title: "Doctor", arguments: ["doctor"])
     }
 
@@ -500,13 +607,16 @@ private final class DiagnosticsWindowController: NSWindowController, NSWindowDel
     }
 
     private func render() {
-        let rendered = orderedSections.map { section in
+        textView.string = renderedDiagnostics()
+    }
+
+    private func renderedDiagnostics() -> String {
+        orderedSections.map { section in
             """
             [\(section)]
             \(sections[section] ?? "Loading...")
             """
         }.joined(separator: "\n\n")
-        textView.string = rendered
     }
 
     private func cap(_ text: String, maxCharacters: Int = 8000) -> String {
@@ -515,6 +625,114 @@ private final class DiagnosticsWindowController: NSWindowController, NSWindowDel
         }
         let end = text.index(text.startIndex, offsetBy: maxCharacters)
         return String(text[..<end]) + "\n... output truncated ..."
+    }
+
+    private func loadCrashAlertsSection() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let text = DiagnosticsWindowController.renderCrashAlerts()
+            Task { @MainActor in
+                self.sections["Crash Alerts"] = self.cap(text, maxCharacters: 12000)
+                self.render()
+            }
+        }
+    }
+
+    nonisolated private static func renderCrashAlerts() -> String {
+        let fileManager = FileManager.default
+        let alertsDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/DictationRouter/alerts", isDirectory: true)
+        var lines: [String] = []
+        appendAlerts(from: alertsDirectory, label: "Pending", to: &lines)
+        appendAlerts(
+            from: alertsDirectory.appendingPathComponent("shown", isDirectory: true),
+            label: "Shown",
+            to: &lines
+        )
+        if lines.isEmpty {
+            if fileManager.fileExists(atPath: alertsDirectory.path) {
+                return "No crash alerts found."
+            }
+            return "Crash alert directory does not exist yet: \(alertsDirectory.path)"
+        }
+        return lines.joined(separator: "\n\n")
+    }
+
+    nonisolated private static func appendAlerts(from directory: URL, label: String, to lines: inout [String]) {
+        let fileManager = FileManager.default
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else {
+            return
+        }
+
+        let jsonFiles = urls
+            .filter { $0.pathExtension == "json" }
+            .sorted {
+                let left = ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate) ?? Date.distantPast
+                let right = ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate) ?? Date.distantPast
+                return left > right
+            }
+            .prefix(8)
+
+        for url in jsonFiles {
+            if let data = try? Data(contentsOf: url),
+               let alert = try? JSONDecoder().decode(CrashAlert.self, from: data) {
+                lines.append("[\(label)]\n" + formatCrashAlert(alert, sourceURL: url))
+            } else {
+                lines.append("[\(label)]\nUnreadable alert file: \(url.path)")
+            }
+        }
+    }
+
+    private func loadRecentDictationLogSection() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let text = DiagnosticsWindowController.renderRecentDictationLog()
+            Task { @MainActor in
+                self.sections["Recent Dictation Log"] = self.cap(text, maxCharacters: 14000)
+                self.render()
+            }
+        }
+    }
+
+    nonisolated private static func renderRecentDictationLog() -> String {
+        let logsDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/DictationRouter/logs", isDirectory: true)
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: logsDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else {
+            return "Dictation log directory does not exist yet: \(logsDirectory.path)"
+        }
+
+        let latest = urls
+            .filter { $0.pathExtension == "log" }
+            .max {
+                let left = ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate) ?? Date.distantPast
+                let right = ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate) ?? Date.distantPast
+                return left < right
+            }
+        guard let latest else {
+            return "No dictation logs found in \(logsDirectory.path)"
+        }
+        guard let text = try? String(contentsOf: latest, encoding: .utf8) else {
+            return "Could not read \(latest.path)"
+        }
+
+        let lines = text.components(separatedBy: .newlines)
+        let tail = lines.suffix(120).joined(separator: "\n")
+        return "file=\(latest.path)\n\n\(tail)"
+    }
+
+    private func writeSnapshot() -> URL {
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/HomeServices/logs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let url = directory.appendingPathComponent("diagnostics-\(formatter.string(from: Date())).txt")
+        try? renderedDiagnostics().write(to: url, atomically: true, encoding: .utf8)
+        return url
     }
 }
 
@@ -657,6 +875,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         var controller: CrashAlertWindowController?
         controller = CrashAlertWindowController(
             alert: alert,
+            alertURL: url,
             onDismiss: { [weak self, weak controller] in
                 guard let self else { return }
                 self.crashAlertPathsBeingShown.remove(url.path)
