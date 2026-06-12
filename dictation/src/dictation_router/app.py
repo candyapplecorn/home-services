@@ -133,11 +133,10 @@ class DictationApp:
                     self.recorder.start(self._active_job.audio_path)
                     stream_active = time.perf_counter()
                     if self._active_job is not None:
+                        raw_path = self.recorder.raw_path
                         self._active_job.update(
                             audio_file_path=str(self._active_job.audio_path),
-                            recording_raw_path=(
-                                str(self.recorder.raw_path) if self.recorder.raw_path else None
-                            ),
+                            recording_raw_path=str(raw_path) if isinstance(raw_path, Path) else None,
                             audio_sample_rate=self.config.audio.sample_rate,
                             audio_channels=self.config.audio.channels,
                             audio_dtype="float32",

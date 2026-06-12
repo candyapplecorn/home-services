@@ -415,15 +415,18 @@ def test_insertability_allows_insert_when_focused_role_is_unknown(monkeypatch: p
     assert result.reason == "focused_role_unknown_allowed"
 
 
-def test_stop_recording_accepts_any_hotkey():
+def test_stop_recording_accepts_any_hotkey(tmp_path: Path):
     from unittest.mock import MagicMock, patch
 
     from dictation_router.app import DictationApp
     from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import JobStore
 
     app = DictationApp(AppConfig(), MagicMock())
     app.recorder = MagicMock()
     app.recorder.is_recording = False
+    app.recorder.raw_path = None
+    app.job_store = JobStore(tmp_path / "jobs")
     app.feedback = MagicMock()
 
     app._on_hotkey(RoutingMode.INSERT)
@@ -560,19 +563,22 @@ def test_slow_start_json_includes_timing_spans():
     app._active_job.update.assert_called_once()
 
 
-def test_stale_processing_state_resets_on_next_hotkey():
+def test_stale_processing_state_resets_on_next_hotkey(tmp_path: Path):
     from unittest.mock import MagicMock
 
     from dictation_router.app import DictationApp
     from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import JobStore
 
     config = AppConfig()
     config.transcription.processing_timeout_seconds = 1
     app = DictationApp(config, MagicMock())
     recorder = MagicMock()
     recorder.is_recording = False
+    recorder.raw_path = None
     app.recorder = recorder
     app._new_recorder = MagicMock(return_value=recorder)
+    app.job_store = JobStore(tmp_path / "jobs")
     app.feedback = MagicMock()
     app._processing = True
     app._processing_started_at = time.monotonic() - 2

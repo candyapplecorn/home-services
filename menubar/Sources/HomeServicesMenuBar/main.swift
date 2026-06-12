@@ -998,7 +998,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
         addStartupTaskItems()
-        menu.addItem(actionItem("Create Desktop Launcher", #selector(createDesktopLauncher)))
+        addDesktopLauncherItems()
 
         menu.addItem(.separator())
         let rootItem = NSMenuItem(title: "Root: \(runner.rootPath)", action: nil, keyEquivalent: "")
@@ -1040,6 +1040,32 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             item.isEnabled = false
             menu.addItem(item)
         }
+    }
+
+    private func addDesktopLauncherItems() {
+        let exists = desktopLauncherExists
+        let status = NSMenuItem(
+            title: exists ? "Desktop Launcher: Installed" : "Desktop Launcher: Not Installed",
+            action: nil,
+            keyEquivalent: ""
+        )
+        status.isEnabled = false
+        menu.addItem(status)
+        menu.addItem(actionItem("Create Desktop Launcher", #selector(createDesktopLauncher), enabled: !exists))
+    }
+
+    private var desktopLauncherExists: Bool {
+        FileManager.default.fileExists(atPath: desktopLauncherPath)
+    }
+
+    private var desktopLauncherPath: String {
+        if let override = ProcessInfo.processInfo.environment["HOME_SERVICES_DESKTOP_SHORTCUT"],
+           !override.isEmpty {
+            return NSString(string: override).expandingTildeInPath
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Desktop/Home Services.command")
+            .path
     }
 
     private func actionItem(_ title: String, _ selector: Selector, enabled: Bool = true) -> NSMenuItem {
@@ -1153,6 +1179,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 title: status == 0 ? "Desktop Launcher Created" : "Desktop Launcher Failed",
                 message: output.isEmpty ? "No output." : output
             )
+            self?.rebuildMenu()
         }
     }
 
