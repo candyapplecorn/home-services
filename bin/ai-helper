@@ -5,7 +5,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AI_HELPER_DIR="${HOME_SERVICES_AI_HELPER_DIR:-$ROOT/ai-helper}"
 AI_HELPER_BIN="$AI_HELPER_DIR/.venv/bin/ai-helper"
+AI_HELPER_ENV_FILE="${AI_HELPER_ENV_FILE:-$HOME/.config/home-services/ai-helper.env}"
 DEFAULT_MODEL_DIR="${AI_HELPER_LOCAL_MODEL:-$HOME/Library/Application Support/HomeServices/ai-helper/models/local-model}"
+
+if [[ -r "$AI_HELPER_ENV_FILE" ]]; then
+  source "$AI_HELPER_ENV_FILE"
+fi
 
 if [[ "${1:-}" == "install-model" ]]; then
   source_path="${2:-}"
