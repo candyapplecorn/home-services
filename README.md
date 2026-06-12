@@ -167,7 +167,7 @@ Path: System Settings -> Privacy & Security.
 
 ```bash
 ~/bin/home-services/bin/home-services start    # start detached
-~/bin/home-services/bin/home-services status   # show service status
+~/bin/home-services/bin/home-services status   # show service status, including degraded panes
 ~/bin/home-services/bin/home-services stop     # stop services
 ~/bin/home-services/bin/home-services kill     # force-kill a wedged tmux session
 ~/bin/home-services/bin/home-services restart  # restart the tmux session
@@ -188,6 +188,10 @@ moviewatch2.sh
 `ai-helper` is intentionally not in the tmux layout because Gemma should not stay
 loaded in memory all day. Detach without stopping services with `Ctrl+b`, then
 `d`.
+
+If the tmux session is still present but one pane has disappeared,
+`home-services status` reports `status=degraded`, and `home-services start`
+recreates missing service panes without killing the whole session.
 
 ## Shell Alias
 

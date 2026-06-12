@@ -77,18 +77,43 @@ require_runtime() {
   }
 }
 
-start_services() {
-  require_runtime
-  mkdir -p "$LOG_DIR"
+dictation_tmux_command() {
+  printf 'set +e; export PATH=%s; cd %q || exit 1; while true; do %q; status=$?; echo "home-services: dictation-router exited with status $status; restarting in 2s" >&2; sleep 2; done' \
+    "$PATH_PREFIX" \
+    "$DICTATION_DIR" \
+    "$DICTATION_DIR/.venv/bin/dictation-router"
+}
 
-  if session_exists; then
-    echo "home-services: session '$SESSION' already running"
-    return 0
-  fi
+moviewatch_tmux_command() {
+  printf 'set +e; export PATH=%s; %q 2>&1 | tee -a %q' \
+    "$PATH_PREFIX" \
+    "$MOVIEWATCH_SCRIPT" \
+    "$MOVIEWATCH_LOG"
+}
 
+services_window_exists() {
+  tmux list-panes -t "${SESSION}:services" >/dev/null 2>&1
+}
+
+pane_title_exists() {
+  local title="$1"
+  tmux list-panes -t "${SESSION}:services" -F '#{pane_title}' 2>/dev/null | grep -Fxq "$title"
+}
+
+add_service_pane() {
+  local title="$1"
+  local command="$2"
+  local pane_id
+
+  pane_id="$(tmux split-window -P -F '#{pane_id}' -t "${SESSION}:services" -v "$command")"
+  tmux select-pane -t "$pane_id" -T "$title"
+  tmux select-pane -t "$pane_id"
+}
+
+create_services_session() {
   local dictation_cmd moviewatch_cmd win pane_dictation pane_moviewatch
-  dictation_cmd="export PATH=$PATH_PREFIX; cd $(printf '%q' "$DICTATION_DIR") && while true; do $(printf '%q' "$DICTATION_DIR/.venv/bin/dictation-router"); status=\$?; echo \"home-services: dictation-router exited with status \$status; restarting in 2s\" >&2; sleep 2; done"
-  moviewatch_cmd="export PATH=$PATH_PREFIX; $(printf '%q' "$MOVIEWATCH_SCRIPT") 2>&1 | tee -a $(printf '%q' "$MOVIEWATCH_LOG")"
+  dictation_cmd="$(dictation_tmux_command)"
+  moviewatch_cmd="$(moviewatch_tmux_command)"
   win="${SESSION}:services"
 
   tmux new-session -d -s "$SESSION" -n services "$dictation_cmd"
@@ -98,7 +123,38 @@ start_services() {
   tmux select-pane -t "$pane_dictation" -T dictation
   tmux select-pane -t "$pane_moviewatch" -T moviewatch
   tmux select-pane -t "$pane_dictation"
+}
 
+start_services() {
+  require_runtime
+  mkdir -p "$LOG_DIR"
+
+  if session_exists; then
+    if ! services_window_exists; then
+      tmux new-window -d -t "$SESSION" -n services "$(dictation_tmux_command)"
+      tmux select-pane -t "${SESSION}:services.0" -T dictation
+    fi
+
+    local repaired=0
+    if ! pane_title_exists dictation; then
+      add_service_pane dictation "$(dictation_tmux_command)"
+      repaired=1
+    fi
+    if ! pane_title_exists moviewatch; then
+      add_service_pane moviewatch "$(moviewatch_tmux_command)"
+      repaired=1
+    fi
+
+    if (( repaired )); then
+      tmux select-layout -t "${SESSION}:services" even-vertical >/dev/null 2>&1 || true
+      echo "home-services: repaired session '$SESSION' (dictation + moviewatch)"
+    else
+      echo "home-services: session '$SESSION' already running"
+    fi
+    return 0
+  fi
+
+  create_services_session
   echo "home-services: started session '$SESSION' (dictation + moviewatch)"
 }
 
@@ -136,7 +192,7 @@ attach_services() {
 }
 
 status_services() {
-  local dictation_state
+  local dictation_state has_dictation=0 has_moviewatch=0
 
   if ! tmux_exists; then
     echo "status=missing-tmux"
@@ -148,12 +204,30 @@ status_services() {
     exit 1
   fi
 
-  echo "status=running"
-  if [[ -r "$DICTATION_STATE_FILE" ]]; then
+  if services_window_exists && pane_title_exists dictation; then
+    has_dictation=1
+  fi
+  if services_window_exists && pane_title_exists moviewatch; then
+    has_moviewatch=1
+  fi
+
+  if (( has_dictation && has_moviewatch )); then
+    echo "status=running"
+  else
+    echo "status=degraded"
+    (( has_dictation )) || echo "missing=dictation"
+    (( has_moviewatch )) || echo "missing=moviewatch"
+  fi
+
+  if (( has_dictation )) && [[ -r "$DICTATION_STATE_FILE" ]]; then
     dictation_state="$(sed -n '1p' "$DICTATION_STATE_FILE" | tr -d '[:space:]')"
     [[ -n "$dictation_state" ]] && echo "dictation_state=$dictation_state"
   fi
   tmux list-panes -t "${SESSION}:services" -F 'pane=#{pane_title} active=#{pane_active} command=#{pane_current_command}' 2>/dev/null || true
+
+  if ! (( has_dictation && has_moviewatch )); then
+    exit 3
+  fi
 }
 
 logs_services() {

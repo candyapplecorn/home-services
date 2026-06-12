@@ -104,6 +104,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 } else if first == "status=stopped" {
                     self.statusLine = "Stopped"
+                } else if first == "status=degraded" {
+                    self.statusLine = "Degraded"
                 } else if first == "status=missing-tmux" {
                     self.statusLine = "tmux Missing"
                 } else {
