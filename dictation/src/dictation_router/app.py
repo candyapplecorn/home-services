@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from dictation_router.alerts import publish_unrecoverable_recording_alert
 from dictation_router.audio.recorder import AudioRecorder
 from dictation_router.config.settings import (
     RECORDINGS_DIR,
@@ -538,11 +539,31 @@ class DictationApp:
         try:
             for job in jobs:
                 if job.status == "recording" and not job.audio_path.is_file():
+                    last_error = "App exited before recording produced an audio file"
+                    should_alert = bool(job.data.get("alert_on_unrecoverable"))
                     job.update(
                         status="failed_terminal",
-                        last_error="App exited before recording produced an audio file",
+                        last_error=last_error,
                         failed_at=utc_now_iso(),
                     )
+                    if should_alert:
+                        publish_unrecoverable_recording_alert(
+                            job,
+                            reason="recording_missing_audio_after_restart",
+                            details=(
+                                f"{last_error}.\n\n"
+                                f"Job: {job.job_id}\n"
+                                f"Job path: {job.job_dir}\n"
+                                f"Expected audio path: {job.audio_path}\n\n"
+                                "This usually means the app or audio stack died while stopping and "
+                                "saving the recording. Because no audio file exists, Home Services "
+                                "cannot retry transcription for this dictation."
+                            ),
+                            logger=self.logger,
+                        )
+                        self.logger.error("%s for job %s; user alert written", last_error, job.job_id)
+                    else:
+                        self.logger.warning("%s for stale job %s; marked terminal", last_error, job.job_id)
                     continue
                 self.feedback.job_recovered()
                 with self._transcription_lock:
@@ -594,10 +615,32 @@ class DictationApp:
         stop_thread.join(timeout_s)
 
         if stop_thread.is_alive():
-            self.logger.critical(
-                "Timed out stopping audio recorder after %.1fs; restarting dictation process",
-                timeout_s,
-            )
+            message = f"Timed out stopping audio recorder after {timeout_s:.1f}s"
+            self.logger.critical("%s; restarting dictation process", message)
+            job = self._active_job
+            if job is not None:
+                job.update(
+                    status="failed_terminal",
+                    last_error=f"{message} before writing an audio file",
+                    failed_at=utc_now_iso(),
+                    alert_on_unrecoverable=True,
+                    unrecoverable_alert_reason="recording_stop_timeout_before_audio_saved",
+                )
+                publish_unrecoverable_recording_alert(
+                    job,
+                    reason="recording_stop_timeout_before_audio_saved",
+                    details=(
+                        f"{message} before Home Services could write the recording.\n\n"
+                        f"Job: {job.job_id}\n"
+                        f"Job path: {job.job_dir}\n"
+                        f"Expected audio path: {job.audio_path}\n"
+                        f"Timeout: {timeout_s:.1f}s\n\n"
+                        "The recorder stop call did not return. Home Services killed the dictation "
+                        "process so the hotkeys would not stay wedged. Because the audio file was "
+                        "never written, there is no recording to transcribe or recover."
+                    ),
+                    logger=self.logger,
+                )
             for handler in self.logger.handlers:
                 handler.flush()
             os._exit(75)

@@ -237,6 +237,7 @@ status_services() {
 logs_services() {
   echo "dictation_logs=$DICTATION_LOG_DIR"
   echo "dictation_jobs=$DICTATION_JOBS_DIR"
+  echo "dictation_alerts=$DICTATION_APP_SUPPORT/alerts"
   echo "dictation_transcripts=$DICTATION_TRANSCRIPTS_DIR"
   echo "moviewatch_log=$MOVIEWATCH_LOG"
   echo "experimental_ai_helper_recordings=$HOME/Library/Application Support/HomeServices/ai-helper/recordings"

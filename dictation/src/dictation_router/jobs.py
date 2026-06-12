@@ -10,6 +10,7 @@ from uuid import uuid4
 from dictation_router.config.settings import JOBS_DIR, RoutingMode
 
 RECOVERABLE_STATUSES = {
+    "recording",
     "recorded",
     "transcribing",
     "transcribed",
@@ -183,8 +184,6 @@ class JobStore:
             except (OSError, json.JSONDecodeError):
                 continue
 
-            if job.status in RECOVERABLE_STATUSES or (
-                job.status == "recording" and job.audio_path.is_file()
-            ):
+            if job.status in RECOVERABLE_STATUSES:
                 jobs.append(job)
         return jobs

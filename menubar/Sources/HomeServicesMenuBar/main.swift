@@ -211,6 +211,169 @@ private func displayHotkey(_ hotkey: String) -> String {
     parseMenuHotkey(hotkey)?.display ?? hotkey
 }
 
+private struct CrashAlert: Decodable {
+    var id: String
+    var type: String
+    var title: String
+    var message: String
+    var reason: String?
+    var details: String?
+    var jobId: String?
+    var jobPath: String?
+    var createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case title
+        case message
+        case reason
+        case details
+        case jobId = "job_id"
+        case jobPath = "job_path"
+        case createdAt = "created_at"
+    }
+}
+
+@MainActor
+private final class CrashAlertWindowController: NSWindowController, NSWindowDelegate {
+    private let detailsScroll = NSScrollView()
+    private let detailsButton = NSButton()
+    private var detailsVisible = false
+    private var didDismiss = false
+    private let onDismiss: () -> Void
+    private let openDiagnostics: () -> Void
+
+    init(alert: CrashAlert, onDismiss: @escaping () -> Void, openDiagnostics: @escaping () -> Void) {
+        self.onDismiss = onDismiss
+        self.openDiagnostics = openDiagnostics
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 250),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Home Services Alert"
+        window.isReleasedWhenClosed = false
+
+        super.init(window: window)
+        window.delegate = self
+        buildContent(in: window, alert: alert)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func show() {
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func buildContent(in window: NSWindow, alert: CrashAlert) {
+        let titleLabel = NSTextField(labelWithString: alert.title)
+        titleLabel.font = .boldSystemFont(ofSize: 16)
+        titleLabel.lineBreakMode = .byWordWrapping
+        titleLabel.maximumNumberOfLines = 0
+
+        let messageLabel = NSTextField(labelWithString: alert.message)
+        messageLabel.lineBreakMode = .byWordWrapping
+        messageLabel.maximumNumberOfLines = 0
+
+        let reasonLabel = NSTextField(labelWithString: alert.reason.map { "Reason: \($0)" } ?? "")
+        reasonLabel.textColor = .secondaryLabelColor
+        reasonLabel.lineBreakMode = .byWordWrapping
+        reasonLabel.maximumNumberOfLines = 0
+        reasonLabel.isHidden = alert.reason == nil
+
+        let detailsView = NSTextView()
+        detailsView.isEditable = false
+        detailsView.isSelectable = true
+        detailsView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        detailsView.textColor = .labelColor
+        detailsView.backgroundColor = .textBackgroundColor
+        detailsView.textContainerInset = NSSize(width: 10, height: 10)
+        detailsView.string = alert.details ?? "No additional details were provided."
+
+        detailsScroll.hasVerticalScroller = true
+        detailsScroll.hasHorizontalScroller = false
+        detailsScroll.borderType = .bezelBorder
+        detailsScroll.documentView = detailsView
+        detailsScroll.isHidden = true
+
+        let dismissButton = NSButton(title: "Dismiss", target: self, action: #selector(dismissAlert))
+        dismissButton.bezelStyle = .rounded
+        dismissButton.keyEquivalent = "\r"
+
+        let diagnosticsButton = NSButton(title: "Open Diagnostics", target: self, action: #selector(openDiagnosticsWindow))
+        diagnosticsButton.bezelStyle = .rounded
+
+        detailsButton.title = "Show Details"
+        detailsButton.target = self
+        detailsButton.action = #selector(toggleDetails)
+        detailsButton.bezelStyle = .rounded
+
+        let buttonRow = NSStackView(views: [diagnosticsButton, detailsButton, dismissButton])
+        buttonRow.orientation = .horizontal
+        buttonRow.alignment = .centerY
+        buttonRow.distribution = .gravityAreas
+        buttonRow.spacing = 10
+
+        let stack = NSStackView(views: [titleLabel, messageLabel, reasonLabel, detailsScroll, buttonRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        window.contentView = NSView()
+        window.contentView?.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -18),
+            stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 18),
+            stack.bottomAnchor.constraint(equalTo: window.contentView!.bottomAnchor, constant: -18),
+            detailsScroll.heightAnchor.constraint(equalToConstant: 220),
+            detailsScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            buttonRow.widthAnchor.constraint(equalTo: stack.widthAnchor)
+        ])
+    }
+
+    @objc private func toggleDetails() {
+        detailsVisible.toggle()
+        detailsScroll.isHidden = !detailsVisible
+        detailsButton.title = detailsVisible ? "Hide Details" : "Show Details"
+        guard let window else { return }
+        var frame = window.frame
+        let delta: CGFloat = 250
+        if detailsVisible {
+            frame.origin.y -= delta
+            frame.size.height += delta
+        } else {
+            frame.origin.y += delta
+            frame.size.height -= delta
+        }
+        window.setFrame(frame, display: true, animate: true)
+    }
+
+    @objc private func openDiagnosticsWindow() {
+        openDiagnostics()
+    }
+
+    @objc private func dismissAlert() {
+        window?.close()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if didDismiss {
+            return
+        }
+        didDismiss = true
+        onDismiss()
+    }
+}
+
 @MainActor
 private final class DiagnosticsWindowController: NSWindowController, NSWindowDelegate {
     private let runner: CommandRunner
@@ -368,6 +531,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeys = DictationHotkeys()
     private var timer: Timer?
     private var diagnosticsWindowController: DiagnosticsWindowController?
+    private var crashAlertControllers: [CrashAlertWindowController] = []
+    private var crashAlertPathsBeingShown: Set<String> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -378,9 +543,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
         refreshStatus()
         refreshStartupStatus(force: true)
+        checkForCrashAlerts()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshStatus()
+                self?.checkForCrashAlerts()
             }
         }
     }
@@ -449,6 +616,74 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             self.startupState.loaded = loaded == "yes" ? true : (loaded == "no" ? false : nil)
             self.rebuildMenu()
         }
+    }
+
+    private var crashAlertsDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/DictationRouter/alerts", isDirectory: true)
+    }
+
+    private func checkForCrashAlerts() {
+        let fileManager = FileManager.default
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: crashAlertsDirectory,
+            includingPropertiesForKeys: nil
+        ) else {
+            return
+        }
+
+        let candidates = urls
+            .filter { $0.pathExtension == "json" && !$0.lastPathComponent.hasSuffix(".tmp") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+        for url in candidates {
+            if crashAlertPathsBeingShown.contains(url.path) {
+                continue
+            }
+            showCrashAlert(at: url)
+            break
+        }
+    }
+
+    private func showCrashAlert(at url: URL) {
+        guard let data = try? Data(contentsOf: url),
+              let alert = try? JSONDecoder().decode(CrashAlert.self, from: data),
+              alert.type == "unrecoverable_recording_loss" else {
+            moveCrashAlertToShown(url)
+            return
+        }
+
+        crashAlertPathsBeingShown.insert(url.path)
+        var controller: CrashAlertWindowController?
+        controller = CrashAlertWindowController(
+            alert: alert,
+            onDismiss: { [weak self, weak controller] in
+                guard let self else { return }
+                self.crashAlertPathsBeingShown.remove(url.path)
+                self.moveCrashAlertToShown(url)
+                if let controller {
+                    self.crashAlertControllers.removeAll { $0 === controller }
+                }
+            },
+            openDiagnostics: { [weak self] in
+                self?.openDiagnostics()
+            }
+        )
+        if let controller {
+            crashAlertControllers.append(controller)
+            controller.show()
+        }
+    }
+
+    private func moveCrashAlertToShown(_ url: URL) {
+        let fileManager = FileManager.default
+        let shownDirectory = crashAlertsDirectory.appendingPathComponent("shown", isDirectory: true)
+        try? fileManager.createDirectory(at: shownDirectory, withIntermediateDirectories: true)
+        let destination = shownDirectory.appendingPathComponent(url.lastPathComponent)
+        if fileManager.fileExists(atPath: destination.path) {
+            try? fileManager.removeItem(at: destination)
+        }
+        try? fileManager.moveItem(at: url, to: destination)
     }
 
     private func updateStatusButton() {

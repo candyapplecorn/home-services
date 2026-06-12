@@ -13,6 +13,7 @@ TRANSCRIPTS_DIR = APP_SUPPORT / "transcripts"
 LOGS_DIR = APP_SUPPORT / "logs"
 RECORDINGS_DIR = APP_SUPPORT / "recordings"
 JOBS_DIR = APP_SUPPORT / "jobs"
+ALERTS_DIR = APP_SUPPORT / "alerts"
 STATE_FILE = APP_SUPPORT / "state"
 
 
@@ -161,5 +162,5 @@ def load_config(path: Path | None = None) -> AppConfig:
 
 
 def ensure_app_dirs() -> None:
-    for directory in (APP_SUPPORT, TRANSCRIPTS_DIR, LOGS_DIR, RECORDINGS_DIR, JOBS_DIR):
+    for directory in (APP_SUPPORT, TRANSCRIPTS_DIR, LOGS_DIR, RECORDINGS_DIR, JOBS_DIR, ALERTS_DIR):
         directory.mkdir(parents=True, exist_ok=True)

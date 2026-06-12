@@ -7,6 +7,9 @@ import pytest
 import yaml
 
 from dictation_router.config.settings import RoutingMode, load_config
+from dictation_router import alerts
+from dictation_router.alerts import publish_unrecoverable_recording_alert
+from dictation_router.jobs import JobStore
 from dictation_router.routing.destination import (
     DestinationSnapshot,
     InsertabilityResult,
@@ -83,6 +86,41 @@ def test_strip_edge_hallucinations_removes_blank_audio_marker():
 
     assert cleaned == "This one should end cleanly."
     assert removed == ["[BLANK_AUDIO]"]
+
+
+def test_strip_edge_hallucinations_removes_multiline_thank_and_blank_audio():
+    cleaned, removed = strip_edge_hallucinations(
+        "Let's improve the menu a little bit.\nThank\n[BLANK_AUDIO]",
+        ["you", "thank", "[BLANK_AUDIO]", "BLANK_AUDIO"],
+    )
+
+    assert cleaned == "Let's improve the menu a little bit."
+    assert removed == ["[BLANK_AUDIO]", "Thank"]
+
+
+def test_job_store_includes_recording_without_audio_for_recovery(tmp_path: Path):
+    store = JobStore(jobs_dir=tmp_path)
+    job = store.create(RoutingMode.INSERT)
+
+    assert [recoverable.job_id for recoverable in store.recoverable_jobs()] == [job.job_id]
+
+
+def test_unrecoverable_recording_alert_is_durable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    store = JobStore(jobs_dir=tmp_path / "jobs")
+    job = store.create(RoutingMode.INSERT)
+    monkeypatch.setattr(alerts, "ALERTS_DIR", tmp_path / "alerts")
+
+    alert_path = publish_unrecoverable_recording_alert(
+        job,
+        reason="recording_stop_timeout_before_audio_saved",
+        details="Recorder stop timed out before audio.wav could be written.",
+    )
+
+    assert alert_path is not None
+    payload = json.loads(alert_path.read_text(encoding="utf-8"))
+    assert payload["type"] == "unrecoverable_recording_loss"
+    assert payload["job_id"] == job.job_id
+    assert "No audio file was written" in payload["message"]
 
 
 def test_normalize_transcript_newlines_joins_accidental_prose_breaks():
