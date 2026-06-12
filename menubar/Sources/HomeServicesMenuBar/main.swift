@@ -58,6 +58,135 @@ private final class CommandRunner {
 }
 
 @MainActor
+private final class DiagnosticsWindowController: NSWindowController, NSWindowDelegate {
+    private let runner: CommandRunner
+    private let textView = NSTextView()
+    private var sections: [String: String] = [:]
+    private let orderedSections = ["Status", "Startup", "Paths", "Doctor"]
+
+    init(runner: CommandRunner) {
+        self.runner = runner
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Home Services Diagnostics"
+        window.isReleasedWhenClosed = false
+
+        super.init(window: window)
+        window.delegate = self
+        buildContent(in: window)
+        refresh()
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func show() {
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.orderOut(nil)
+        return false
+    }
+
+    private func buildContent(in window: NSWindow) {
+        let refreshButton = NSButton(
+            title: "Refresh",
+            target: self,
+            action: #selector(refreshButtonClicked)
+        )
+        refreshButton.bezelStyle = .rounded
+
+        let title = NSTextField(labelWithString: "Diagnostics")
+        title.font = .boldSystemFont(ofSize: 18)
+
+        let header = NSStackView(views: [title, NSView(), refreshButton])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 12
+
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.textContainerInset = NSSize(width: 12, height: 12)
+        textView.string = "Loading..."
+
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.documentView = textView
+
+        let stack = NSStackView(views: [header, scrollView])
+        stack.orientation = .vertical
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        window.contentView = NSView()
+        window.contentView?.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: window.contentView!.bottomAnchor, constant: -16),
+            header.heightAnchor.constraint(equalToConstant: 32)
+        ])
+    }
+
+    @objc private func refreshButtonClicked() {
+        refresh()
+    }
+
+    private func refresh() {
+        sections = [
+            "Status": "Loading...",
+            "Startup": "Loading...",
+            "Paths": "Loading...",
+            "Doctor": "Loading..."
+        ]
+        render()
+        loadSection(title: "Status", arguments: ["status"])
+        loadSection(title: "Startup", arguments: ["startup-status"])
+        loadSection(title: "Paths", arguments: ["logs"])
+        loadSection(title: "Doctor", arguments: ["doctor"])
+    }
+
+    private func loadSection(title: String, arguments: [String]) {
+        runner.run(arguments) { [weak self] status, output in
+            guard let self else { return }
+            let body = output.isEmpty ? "No output." : output
+            let prefix = status == 0 ? "" : "exit_status=\(status)\n"
+            self.sections[title] = self.cap(prefix + body)
+            self.render()
+        }
+    }
+
+    private func render() {
+        let rendered = orderedSections.map { section in
+            """
+            [\(section)]
+            \(sections[section] ?? "Loading...")
+            """
+        }.joined(separator: "\n\n")
+        textView.string = rendered
+    }
+
+    private func cap(_ text: String, maxCharacters: Int = 8000) -> String {
+        if text.count <= maxCharacters {
+            return text
+        }
+        let end = text.index(text.startIndex, offsetBy: maxCharacters)
+        return String(text[..<end]) + "\n... output truncated ..."
+    }
+}
+
+@MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let runner = CommandRunner()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -66,6 +195,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dictationState = "unknown"
     private var detailLines: [String] = []
     private var timer: Timer?
+    private var diagnosticsWindowController: DiagnosticsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -95,7 +225,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
             if let first = lines.first {
                 if first == "status=running" {
-                    if self.dictationState == "recording" {
+                    if self.dictationState == "starting" {
+                        self.statusLine = "Starting"
+                    } else if self.dictationState == "recording" {
                         self.statusLine = "Recording"
                     } else if self.dictationState == "processing" {
                         self.statusLine = "Processing"
@@ -122,6 +254,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusButton() {
         switch dictationState {
+        case "starting":
+            setStatusSymbol(
+                "hourglass",
+                fallback: "...",
+                tint: .systemYellow,
+                tooltip: "Home Services: Starting Recording"
+            )
         case "recording":
             setStatusSymbol(
                 "record.circle.fill",
@@ -184,6 +323,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(actionItem("Open Dictation Config", #selector(openConfig)))
         menu.addItem(actionItem("Open Logs", #selector(openLogs)))
+        menu.addItem(actionItem("Open Diagnostics", #selector(openDiagnostics)))
         menu.addItem(actionItem("Run Doctor", #selector(runDoctor)))
 
         menu.addItem(.separator())
@@ -236,6 +376,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openLogs() {
         runner.runDetached(["open-logs"])
+    }
+
+    @objc private func openDiagnostics() {
+        if diagnosticsWindowController == nil {
+            diagnosticsWindowController = DiagnosticsWindowController(runner: runner)
+        }
+        diagnosticsWindowController?.show()
     }
 
     @objc private func runDoctor() {

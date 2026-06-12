@@ -220,9 +220,11 @@ The reliability goals are:
 - No stopped dictation audio is lost if transcription crashes.
 - Every transcription failure keeps the exit code, stdout, stderr, command, model, and audio path.
 - On app startup, unfinished recorded/transcribing/transcribed/retryable jobs are recovered.
-- Jobs remember their original routing mode.
+- Recovered insert/clean jobs remember their original routing mode but reopen in review mode instead of typing into whatever app is focused at restart time.
 - Failed transcriptions retry once with the same model, then optionally with the smaller fallback model.
 - If retry fails, the error is logged and the recording remains available in the job folder.
+- Slow recording starts write a `slow_start_json=...` diagnostic entry with timing spans for lock wait, job creation, audio startup, state writes, and beep requests.
+- Insert/clean mode falls back to review mode when macOS confidently reports that the current focus is not text-input-capable or the focus changed after recording stopped.
 
 ## Shell Alias
 
@@ -282,6 +284,7 @@ The app runs without a Dock icon and adds an `HS` menu bar item with controls fo
 - Start, stop, restart, and status
 - Opening the tmux session in Terminal
 - Opening dictation config, HomeServices logs, DictationRouter logs, and job folders
+- Opening a diagnostics window with status, startup task state, paths, and doctor output
 - Running `home-services doctor`
 - Installing or removing the login startup task
 - Creating the Desktop launcher
@@ -311,6 +314,14 @@ hotkeys:
   insert: "cmd+alt+ctrl+d"
   review: "cmd+alt+ctrl+r"
   clean: "cmd+alt+ctrl+c"
+  slow_start_threshold_seconds: 1.0
+
+routing:
+  fallback_to_review_when_not_insertable: true
+  fallback_to_review_on_focus_change: true
+
+audio:
+  prewarm_on_startup: true
 ```
 
 ### Experimental AI Helper

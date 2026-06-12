@@ -24,6 +24,9 @@ class AudioFeedback:
             daemon=True,
         ).start()
 
+    def ack(self) -> None:
+        self._play("Morse.aiff")
+
     def recording_started(self) -> None:
         self._play("Tink.aiff")
 

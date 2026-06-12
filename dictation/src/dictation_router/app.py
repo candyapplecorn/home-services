@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import queue
 import signal
@@ -20,6 +21,7 @@ from dictation_router.config.settings import (
     ensure_app_dirs,
 )
 from dictation_router.jobs import DictationJob, JobStore, utc_now_iso
+from dictation_router.routing.destination import DestinationSnapshot, capture_destination_snapshot
 from dictation_router.routing.editor import EditorLauncher
 from dictation_router.routing.inserter import TextInserter
 from dictation_router.routing.router import Router
@@ -57,11 +59,15 @@ class DictationApp:
             inserter=TextInserter(max_typing_chars=config.routing.max_typing_chars),
             editor=EditorLauncher(preferred_editors=config.editor.preferred),
             logger=logger,
+            fallback_to_review_when_not_insertable=config.routing.fallback_to_review_when_not_insertable,
+            fallback_to_review_on_focus_change=config.routing.fallback_to_review_on_focus_change,
         )
         self._lock = threading.Lock()
+        self._transcription_lock = threading.Lock()
         self._active_mode: RoutingMode | None = None
         self._processing = False
         self._processing_started_at: float | None = None
+        self._recovering = False
         self._active_job: DictationJob | None = None
         self._keep_recordings = config.transcription.keep_recordings
         self._min_chars_per_minute = config.transcription.min_chars_per_minute
@@ -81,8 +87,17 @@ class DictationApp:
         )
 
     def _on_hotkey(self, mode: RoutingMode) -> None:
+        hotkey_received = time.perf_counter()
+        active_mode: RoutingMode | None = None
+        job: DictationJob | None = None
+
         with self._lock:
+            lock_acquired = time.perf_counter()
             if self._processing:
+                if self._recovering:
+                    self.logger.info("Ignoring hotkey while recovering unfinished jobs")
+                    return
+
                 elapsed = (
                     time.monotonic() - self._processing_started_at
                     if self._processing_started_at is not None
@@ -103,12 +118,35 @@ class DictationApp:
 
             if not self.recorder.is_recording:
                 self._active_mode = mode
+                job_create_started = time.perf_counter()
                 self._active_job = self.job_store.create(mode)
+                job_create_done = time.perf_counter()
                 self.logger.info("Recording started (%s mode)", mode.value)
                 try:
+                    self._write_activity_state("starting")
+                    starting_state_written = time.perf_counter()
+                    self.feedback.ack()
+                    ack_requested = time.perf_counter()
+                    recorder_start_started = time.perf_counter()
                     self.recorder.start()
+                    stream_active = time.perf_counter()
                     self._write_activity_state("recording")
+                    recording_state_written = time.perf_counter()
                     self.feedback.recording_started()
+                    recording_beep_requested = time.perf_counter()
+                    self._log_recording_start_timing(
+                        mode=mode,
+                        hotkey_received=hotkey_received,
+                        lock_acquired=lock_acquired,
+                        job_create_started=job_create_started,
+                        job_create_done=job_create_done,
+                        starting_state_written=starting_state_written,
+                        ack_requested=ack_requested,
+                        recorder_start_started=recorder_start_started,
+                        stream_active=stream_active,
+                        recording_state_written=recording_state_written,
+                        recording_beep_requested=recording_beep_requested,
+                    )
                 except Exception as exc:
                     self.logger.exception("Failed to start recording: %s", exc)
                     self.feedback.error()
@@ -124,6 +162,7 @@ class DictationApp:
                 return
 
             active_mode = self._active_mode
+            job = self._active_job
             if active_mode != mode:
                 self.logger.info(
                     "Stopping recording (%s mode) via %s hotkey",
@@ -134,13 +173,92 @@ class DictationApp:
             self._processing_started_at = time.monotonic()
             self._write_activity_state("processing")
 
+        destination_queue: queue.Queue[DestinationSnapshot | None] = queue.Queue(maxsize=1)
         threading.Thread(
-            target=self._finish_recording,
-            args=(active_mode,),
+            target=self._capture_destination_snapshot,
+            args=(destination_queue,),
+            name="dictation-destination-snapshot",
             daemon=True,
         ).start()
 
-    def _finish_recording(self, mode: RoutingMode | None) -> None:
+        threading.Thread(
+            target=self._finish_recording,
+            args=(active_mode, destination_queue),
+            daemon=True,
+        ).start()
+
+    def _capture_destination_snapshot(
+        self,
+        result_queue: queue.Queue[DestinationSnapshot | None],
+    ) -> None:
+        try:
+            destination_snapshot = capture_destination_snapshot()
+            result_queue.put_nowait(destination_snapshot)
+        except Exception as exc:
+            self.logger.warning("Failed to capture stop destination: %s", exc)
+            try:
+                result_queue.put_nowait(None)
+            except queue.Full:
+                pass
+
+    def _resolve_destination_snapshot(
+        self,
+        destination_source: DestinationSnapshot | queue.Queue[DestinationSnapshot | None] | None,
+    ) -> DestinationSnapshot | None:
+        if isinstance(destination_source, queue.Queue):
+            try:
+                return destination_source.get(timeout=0.8)
+            except queue.Empty:
+                self.logger.warning("Timed out waiting for stop destination snapshot")
+                return None
+        return destination_source
+
+    def _log_recording_start_timing(
+        self,
+        mode: RoutingMode,
+        hotkey_received: float,
+        lock_acquired: float,
+        job_create_started: float,
+        job_create_done: float,
+        starting_state_written: float,
+        ack_requested: float,
+        recorder_start_started: float,
+        stream_active: float,
+        recording_state_written: float,
+        recording_beep_requested: float,
+    ) -> None:
+        elapsed_ms = {
+            "lock_wait_ms": (lock_acquired - hotkey_received) * 1000,
+            "job_create_ms": (job_create_done - job_create_started) * 1000,
+            "starting_state_ms": (starting_state_written - job_create_done) * 1000,
+            "ack_request_ms": (ack_requested - starting_state_written) * 1000,
+            "recorder_start_ms": (stream_active - recorder_start_started) * 1000,
+            "recording_state_ms": (recording_state_written - stream_active) * 1000,
+            "recording_beep_request_ms": (recording_beep_requested - recording_state_written) * 1000,
+            "hotkey_to_stream_active_ms": (stream_active - hotkey_received) * 1000,
+            "hotkey_to_recording_beep_ms": (recording_beep_requested - hotkey_received) * 1000,
+        }
+        if elapsed_ms["hotkey_to_stream_active_ms"] < (
+            self.config.hotkeys.slow_start_threshold_seconds * 1000
+        ):
+            return
+
+        payload = {
+            "event": "recording_start_slow",
+            "mode": mode.value,
+            **{key: round(value, 2) for key, value in elapsed_ms.items()},
+        }
+        self.logger.warning("slow_start_json=%s", json.dumps(payload, sort_keys=True))
+        if self._active_job is not None:
+            self._active_job.update(recording_start_slow=payload)
+
+    def _finish_recording(
+        self,
+        mode: RoutingMode | None,
+        destination_snapshot: (
+            DestinationSnapshot | queue.Queue[DestinationSnapshot | None] | None
+        ) = None,
+    ) -> None:
         source_audio_path: Path | None = None
         job_audio_path: Path | None = None
         job = self._active_job
@@ -181,7 +299,11 @@ class DictationApp:
                     rms_level,
                 )
 
-            self._process_job(job)
+            resolved_destination = self._resolve_destination_snapshot(destination_snapshot)
+            if resolved_destination is not None:
+                job.update(stop_destination=resolved_destination.to_dict())
+            with self._transcription_lock:
+                self._process_job(job, destination_snapshot=resolved_destination)
         except Exception as exc:
             self.logger.exception("Processing failed: %s", exc)
             if job is not None:
@@ -201,8 +323,24 @@ class DictationApp:
             self._cleanup_recording(source_audio_path)
             self._cleanup_old_recordings()
 
-    def _process_job(self, job: DictationJob, recovered: bool = False) -> bool:
-        mode = job.mode
+    def _process_job(
+        self,
+        job: DictationJob,
+        recovered: bool = False,
+        destination_snapshot: DestinationSnapshot | None = None,
+    ) -> bool:
+        requested_mode = job.mode
+        mode = RoutingMode.REVIEW if recovered and requested_mode is not None else requested_mode
+        if destination_snapshot is None:
+            raw_destination = job.data.get("stop_destination")
+            destination_snapshot = DestinationSnapshot.from_dict(
+                raw_destination if isinstance(raw_destination, dict) else None
+            )
+        if recovered and requested_mode is not None:
+            job.update(
+                recovered_route_original_mode=requested_mode.value,
+                recovered_route_actual_mode=RoutingMode.REVIEW.value,
+            )
         audio_path = job.audio_path
         if not audio_path.is_file():
             job.update(
@@ -335,8 +473,20 @@ class DictationApp:
                 if not transcript:
                     self.logger.warning("Transcript empty after post-processing; skipping routing")
                 elif mode is not None:
-                    self.router.route(transcript, mode)
+                    route_result = self.router.route(
+                        transcript,
+                        mode,
+                        destination_snapshot=destination_snapshot,
+                    )
                     routed = True
+                    job.update(
+                        route_requested_mode=(
+                            requested_mode.value if requested_mode is not None else None
+                        ),
+                        route_actual_mode=route_result.actual_mode.value,
+                        route_fallback_reason=route_result.fallback_reason,
+                        route_review_path=route_result.review_path,
+                    )
                 job.update(
                     status="completed",
                     routed=routed,
@@ -375,19 +525,45 @@ class DictationApp:
         if not jobs:
             return
 
+        with self._lock:
+            if self.recorder.is_recording or self._processing:
+                self.logger.info("Deferring unfinished job recovery because dictation is busy")
+                return
+            self._processing = True
+            self._processing_started_at = time.monotonic()
+            self._recovering = True
+
         self.logger.info("Recovering %d unfinished dictation job(s)", len(jobs))
         self._write_activity_state("processing")
-        for job in jobs:
-            if job.status == "recording" and not job.audio_path.is_file():
-                job.update(
-                    status="failed_terminal",
-                    last_error="App exited before recording produced an audio file",
-                    failed_at=utc_now_iso(),
-                )
-                continue
-            self.feedback.job_recovered()
-            self._process_job(job, recovered=True)
-        self._write_activity_state("idle")
+        try:
+            for job in jobs:
+                if job.status == "recording" and not job.audio_path.is_file():
+                    job.update(
+                        status="failed_terminal",
+                        last_error="App exited before recording produced an audio file",
+                        failed_at=utc_now_iso(),
+                    )
+                    continue
+                self.feedback.job_recovered()
+                with self._transcription_lock:
+                    self._process_job(job, recovered=True)
+        finally:
+            with self._lock:
+                self._processing = False
+                self._processing_started_at = None
+                self._recovering = False
+                if self.recorder.is_recording:
+                    next_state = "recording"
+                else:
+                    next_state = "idle"
+            self._write_activity_state(next_state)
+
+    def _prewarm_audio(self) -> None:
+        try:
+            self._new_recorder().prewarm()
+            self.logger.info("Audio input prewarm completed")
+        except Exception as exc:
+            self.logger.warning("Audio input prewarm failed: %s", exc)
 
     def _write_activity_state(self, state: str) -> None:
         try:
@@ -459,7 +635,6 @@ class DictationApp:
         ensure_app_dirs()
         self._write_activity_state("idle")
         self._cleanup_old_recordings()
-        self._recover_unfinished_jobs()
         self.logger.info("Dictation Router started")
         self.logger.info(
             "Insert: %s  (%s)",
@@ -500,6 +675,17 @@ class DictationApp:
         signal.signal(signal.SIGTERM, force_shutdown)
 
         self._hotkeys.start()
+        if self.config.audio.prewarm_on_startup:
+            threading.Thread(
+                target=self._prewarm_audio,
+                name="dictation-audio-prewarm",
+                daemon=True,
+            ).start()
+        threading.Thread(
+            target=self._recover_unfinished_jobs,
+            name="dictation-job-recovery",
+            daemon=True,
+        ).start()
         try:
             threading.Event().wait()
         except KeyboardInterrupt:

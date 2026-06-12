@@ -48,6 +48,8 @@ class TranscriptionConfig:
 @dataclass
 class RoutingConfig:
     max_typing_chars: int = 500
+    fallback_to_review_when_not_insertable: bool = True
+    fallback_to_review_on_focus_change: bool = True
 
 
 @dataclass
@@ -60,6 +62,7 @@ class AudioConfig:
     sample_rate: int = 16000
     channels: int = 1
     device: int | str | None = None
+    prewarm_on_startup: bool = True
 
 
 @dataclass
@@ -67,6 +70,7 @@ class HotkeyConfig:
     insert: str = "hyper+d"
     review: str = "hyper+r"
     clean: str = "hyper+c"
+    slow_start_threshold_seconds: float = 1.0
 
 
 @dataclass
@@ -124,6 +128,12 @@ def load_config(path: Path | None = None) -> AppConfig:
         ),
         routing=RoutingConfig(
             max_typing_chars=int(routing_raw.get("max_typing_chars", 500)),
+            fallback_to_review_when_not_insertable=bool(
+                routing_raw.get("fallback_to_review_when_not_insertable", True)
+            ),
+            fallback_to_review_on_focus_change=bool(
+                routing_raw.get("fallback_to_review_on_focus_change", True)
+            ),
         ),
         editor=EditorConfig(
             preferred=list(editor_raw.get("preferred", ["WebStorm", "Rider", "TextEdit"])),
@@ -132,11 +142,13 @@ def load_config(path: Path | None = None) -> AppConfig:
             insert=hotkeys_raw.get("insert", "hyper+d"),
             review=hotkeys_raw.get("review", "hyper+r"),
             clean=hotkeys_raw.get("clean", "hyper+c"),
+            slow_start_threshold_seconds=float(hotkeys_raw.get("slow_start_threshold_seconds", 1.0)),
         ),
         audio=AudioConfig(
             sample_rate=int(audio_raw.get("sample_rate", 16000)),
             channels=int(audio_raw.get("channels", 1)),
             device=audio_raw.get("device"),
+            prewarm_on_startup=bool(audio_raw.get("prewarm_on_startup", True)),
         ),
     )
 

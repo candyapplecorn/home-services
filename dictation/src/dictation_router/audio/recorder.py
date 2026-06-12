@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -55,6 +56,22 @@ class AudioRecorder:
             callback=self._callback,
         )
         self._stream.start()
+
+    def prewarm(self) -> None:
+        stream: sd.InputStream | None = None
+        try:
+            stream = sd.InputStream(
+                device=self.device,
+                samplerate=self.sample_rate,
+                channels=self.channels,
+                dtype="float32",
+            )
+            stream.start()
+            time.sleep(0.05)
+            stream.abort()
+        finally:
+            if stream is not None:
+                stream.close()
 
     def stop(self) -> Path:
         with self._lock:

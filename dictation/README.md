@@ -56,6 +56,14 @@ hotkeys:
   insert: "hyper+d"   # Caps Lock remapped via Karabiner (recommended)
   review: "hyper+r"
   clean: "hyper+c"
+  slow_start_threshold_seconds: 1.0
+
+routing:
+  fallback_to_review_when_not_insertable: true
+  fallback_to_review_on_focus_change: true
+
+audio:
+  prewarm_on_startup: true
 ```
 
 **Hyper key** (recommended on MacBook): remap Caps Lock to Ctrl+Option+Shift+Cmd in [Karabiner-Elements](https://karabiner-elements.pqrs.org/), then use `hyper+d`, `hyper+r`, `hyper+c`.
@@ -83,16 +91,18 @@ Grant Accessibility when prompted (System Settings → Privacy & Security → Ac
 
 | Hotkey | Mode | Behavior |
 |--------|------|----------|
-| Hyper+D | Insert | Transcribe → type at active cursor (clipboard fallback) |
+| Hyper+D | Insert | Transcribe → type at active cursor, with review fallback when the target is not safely insertable |
 | Hyper+R | Review | Transcribe → open timestamped file in TextEdit (or WebStorm/Rider if running) |
-| Hyper+C | Clean | Transcribe → local cleanup → insert at cursor |
+| Hyper+C | Clean | Transcribe → local cleanup → insert at cursor, with the same review fallback |
 
-Toggle workflow: press once to start recording, press the **same** hotkey again to stop and process.
+Toggle workflow: press once to start recording, then press any dictation hotkey again to stop and process using the original start mode.
 
 ## Audio feedback
 
-- Start: single beep
+- Hotkey accepted: short tick
+- Recording active: single beep
 - Stop: double beep
+- Transcription started/retry/recovered/fallback events: short system tones
 - Success: chime
 - Error: bass tone
 
@@ -100,6 +110,9 @@ Toggle workflow: press once to start recording, press the **same** hotkey again 
 
 - Logs: `~/Library/Application Support/DictationRouter/logs/`
 - Review transcripts: `~/Library/Application Support/DictationRouter/transcripts/`
+- Durable jobs, audio, stdout/stderr, and transcripts: `~/Library/Application Support/DictationRouter/jobs/`
+
+Slow recording starts are logged as `slow_start_json=...` when hotkey-to-recording-active exceeds the configured threshold. If transcription crashes, recorded jobs are recovered at app startup and routed to review mode so text is not inserted into the wrong application after restart.
 
 ## Tests
 

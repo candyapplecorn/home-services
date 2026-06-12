@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import time
 
@@ -6,8 +7,13 @@ import pytest
 import yaml
 
 from dictation_router.config.settings import RoutingMode, load_config
+from dictation_router.routing.destination import (
+    DestinationSnapshot,
+    InsertabilityResult,
+    inspect_insertability,
+)
 from dictation_router.routing.cleaner import clean_transcript
-from dictation_router.routing.router import Router
+from dictation_router.routing.router import RouteResult, Router
 from dictation_router.transcription.postprocess import (
     normalize_transcript_newlines,
     strip_edge_hallucinations,
@@ -134,6 +140,159 @@ def test_router_clean_mode():
     assert "hello hello" not in inserter.last_text
 
 
+class FallbackInserter(FakeInserter):
+    def __init__(self, result: InsertabilityResult):
+        super().__init__()
+        self.result = result
+
+    def can_insert(self, stop_destination=None, require_same_destination=False):  # noqa: ANN001, ARG002
+        return self.result
+
+
+def test_router_insert_mode_falls_back_to_review_when_not_insertable():
+    inserter = FallbackInserter(InsertabilityResult(False, "not_insertable:AXButton"))
+    editor = FakeEditor()
+    router = Router(
+        inserter=inserter,
+        editor=editor,
+        fallback_to_review_when_not_insertable=True,
+    )
+
+    result = router.route("hello world", RoutingMode.INSERT)
+
+    assert inserter.last_text is None
+    assert editor.last_text == "hello world"
+    assert result.actual_mode == RoutingMode.REVIEW
+    assert result.fallback_reason == "not_insertable:AXButton"
+
+
+def test_router_clean_mode_falls_back_to_review_with_cleaned_text():
+    inserter = FallbackInserter(InsertabilityResult(False, "focus_changed"))
+    editor = FakeEditor()
+    router = Router(
+        inserter=inserter,
+        editor=editor,
+        fallback_to_review_when_not_insertable=True,
+        fallback_to_review_on_focus_change=True,
+    )
+
+    result = router.route("hello hello world", RoutingMode.CLEAN)
+
+    assert inserter.last_text is None
+    assert editor.last_text is not None
+    assert "hello hello" not in editor.last_text
+    assert result.actual_mode == RoutingMode.REVIEW
+    assert result.fallback_reason == "focus_changed"
+
+
+def test_router_focus_change_fallback_can_be_enabled_without_not_insertable_fallback():
+    inserter = FallbackInserter(InsertabilityResult(False, "focus_changed"))
+    editor = FakeEditor()
+    router = Router(
+        inserter=inserter,
+        editor=editor,
+        fallback_to_review_when_not_insertable=False,
+        fallback_to_review_on_focus_change=True,
+    )
+
+    result = router.route("hello world", RoutingMode.INSERT)
+
+    assert inserter.last_text is None
+    assert editor.last_text == "hello world"
+    assert result.actual_mode == RoutingMode.REVIEW
+    assert result.fallback_reason == "focus_changed"
+
+
+def test_router_not_insertable_fallback_can_be_disabled_independently():
+    inserter = FallbackInserter(InsertabilityResult(False, "not_insertable:AXButton"))
+    editor = FakeEditor()
+    router = Router(
+        inserter=inserter,
+        editor=editor,
+        fallback_to_review_when_not_insertable=False,
+        fallback_to_review_on_focus_change=True,
+    )
+
+    result = router.route("hello world", RoutingMode.INSERT)
+
+    assert inserter.last_text == "hello world"
+    assert not hasattr(editor, "last_text")
+    assert result.actual_mode == RoutingMode.INSERT
+
+
+def test_insertability_allows_insert_when_destination_probe_is_unknown(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("dictation_router.routing.destination.capture_destination_snapshot", lambda: None)
+
+    result = inspect_insertability(require_same_destination=True)
+
+    assert result.insertable is True
+    assert result.reason == "destination_unknown_allowed"
+
+
+def test_insertability_falls_back_when_confident_focus_changed(monkeypatch: pytest.MonkeyPatch):
+    stopped = DestinationSnapshot(
+        app_name="iTerm2",
+        bundle_id="com.googlecode.iterm2",
+        pid="123",
+        window_title="zsh",
+        focused_role="AXTextArea",
+        focused_subrole="",
+        focused_description="",
+        captured_at="2026-06-12T00:00:00+00:00",
+    )
+    current = DestinationSnapshot(
+        app_name="Slack",
+        bundle_id="com.tinyspeck.slackmacgap",
+        pid="456",
+        window_title="Slack",
+        focused_role="AXTextArea",
+        focused_subrole="",
+        focused_description="",
+        captured_at="2026-06-12T00:00:01+00:00",
+    )
+    monkeypatch.setattr(
+        "dictation_router.routing.destination.capture_destination_snapshot",
+        lambda: current,
+    )
+
+    result = inspect_insertability(stop_destination=stopped, require_same_destination=True)
+
+    assert result.insertable is False
+    assert result.reason == "focus_changed"
+
+
+def test_insertability_allows_insert_when_focused_role_is_unknown(monkeypatch: pytest.MonkeyPatch):
+    stopped = DestinationSnapshot(
+        app_name="iTerm2",
+        bundle_id="com.googlecode.iterm2",
+        pid="123",
+        window_title="zsh",
+        focused_role="AXTextArea",
+        focused_subrole="",
+        focused_description="",
+        captured_at="2026-06-12T00:00:00+00:00",
+    )
+    current = DestinationSnapshot(
+        app_name="iTerm2",
+        bundle_id="com.googlecode.iterm2",
+        pid="123",
+        window_title="zsh",
+        focused_role="",
+        focused_subrole="",
+        focused_description="",
+        captured_at="2026-06-12T00:00:01+00:00",
+    )
+    monkeypatch.setattr(
+        "dictation_router.routing.destination.capture_destination_snapshot",
+        lambda: current,
+    )
+
+    result = inspect_insertability(stop_destination=stopped, require_same_destination=True)
+
+    assert result.insertable is True
+    assert result.reason == "focused_role_unknown_allowed"
+
+
 def test_stop_recording_accepts_any_hotkey():
     from unittest.mock import MagicMock, patch
 
@@ -152,14 +311,131 @@ def test_stop_recording_accepts_any_hotkey():
     app.recorder.is_recording = True
     finished_modes: list[RoutingMode | None] = []
 
-    def capture_finish(mode: RoutingMode | None) -> None:
+    def capture_finish(mode: RoutingMode | None, destination_snapshot=None) -> None:  # noqa: ANN001
         finished_modes.append(mode)
 
-    with patch.object(app, "_finish_recording", side_effect=capture_finish):
+    def capture_destination(result_queue) -> None:  # noqa: ANN001
+        result_queue.put_nowait(None)
+
+    with (
+        patch.object(app, "_capture_destination_snapshot", side_effect=capture_destination),
+        patch.object(app, "_finish_recording", side_effect=capture_finish),
+    ):
         app._on_hotkey(RoutingMode.REVIEW)
+
+    deadline = time.monotonic() + 1
+    while not finished_modes and time.monotonic() < deadline:
+        time.sleep(0.01)
 
     assert finished_modes == [RoutingMode.INSERT]
     assert app._processing is True
+
+
+def test_stop_recording_does_not_wait_for_destination_snapshot():
+    from threading import Event
+    from unittest.mock import MagicMock, patch
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+
+    app = DictationApp(AppConfig(), MagicMock())
+    app.recorder = MagicMock()
+    app.recorder.is_recording = True
+    app._active_mode = RoutingMode.INSERT
+    app._active_job = MagicMock()
+
+    finish_called = Event()
+
+    def slow_capture(result_queue) -> None:  # noqa: ANN001
+        time.sleep(0.2)
+        result_queue.put_nowait(None)
+
+    def capture_finish(_mode, _destination_snapshot=None) -> None:  # noqa: ANN001
+        finish_called.set()
+
+    with (
+        patch.object(app, "_capture_destination_snapshot", side_effect=slow_capture),
+        patch.object(app, "_finish_recording", side_effect=capture_finish),
+    ):
+        started = time.monotonic()
+        app._on_hotkey(RoutingMode.REVIEW)
+        elapsed = time.monotonic() - started
+
+    assert elapsed < 0.1
+    assert finish_called.wait(0.1)
+
+
+def test_hotkey_ack_happens_before_recorder_start():
+    from unittest.mock import MagicMock
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+
+    events: list[str] = []
+    app = DictationApp(AppConfig(), MagicMock())
+    app.recorder = MagicMock()
+    app.recorder.is_recording = False
+    app.recorder.start.side_effect = lambda: events.append("recorder_start")
+    app.job_store = MagicMock()
+    app.job_store.create.return_value = MagicMock()
+    app.feedback = MagicMock()
+    app.feedback.ack.side_effect = lambda: events.append("ack")
+    app._write_activity_state = MagicMock()
+    app._log_recording_start_timing = MagicMock()
+
+    app._on_hotkey(RoutingMode.INSERT)
+
+    assert events == ["ack", "recorder_start"]
+
+
+def test_ignored_hotkey_does_not_ack():
+    from unittest.mock import MagicMock
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+
+    app = DictationApp(AppConfig(), MagicMock())
+    app.recorder = MagicMock()
+    app.recorder.is_recording = False
+    app.feedback = MagicMock()
+    app._processing = True
+    app._processing_started_at = time.monotonic()
+
+    app._on_hotkey(RoutingMode.INSERT)
+
+    app.feedback.ack.assert_not_called()
+
+
+def test_slow_start_json_includes_timing_spans():
+    from unittest.mock import MagicMock
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+
+    logger = MagicMock()
+    app = DictationApp(AppConfig(), logger)
+    app._active_job = MagicMock()
+
+    app._log_recording_start_timing(
+        mode=RoutingMode.INSERT,
+        hotkey_received=0.0,
+        lock_acquired=0.1,
+        job_create_started=0.1,
+        job_create_done=0.3,
+        starting_state_written=0.35,
+        ack_requested=0.36,
+        recorder_start_started=0.36,
+        stream_active=1.7,
+        recording_state_written=1.72,
+        recording_beep_requested=1.73,
+    )
+
+    assert logger.warning.call_args[0][0] == "slow_start_json=%s"
+    payload = json.loads(logger.warning.call_args[0][1])
+    assert payload["event"] == "recording_start_slow"
+    assert payload["job_create_ms"] == 200.0
+    assert payload["recorder_start_ms"] == 1340.0
+    app._active_job.update.assert_called_once()
 
 
 def test_stale_processing_state_resets_on_next_hotkey():
@@ -307,6 +583,7 @@ def test_process_job_retries_failed_transcription_and_preserves_artifacts(
     app = DictationApp(config, MagicMock())
     app.job_store = store
     app.router = MagicMock()
+    app.router.route.return_value = RouteResult(RoutingMode.INSERT, RoutingMode.INSERT)
     app.feedback = MagicMock()
 
     def successful_result(*args, **kwargs):  # noqa: ANN002, ANN003
@@ -346,9 +623,66 @@ def test_process_job_retries_failed_transcription_and_preserves_artifacts(
     assert job.audio_path.is_file()
     assert job.final_transcript_path.read_text(encoding="utf-8") == "hello after retry"
     assert app.transcriber.transcribe_detailed.call_count == 2
-    app.router.route.assert_called_once_with("hello after retry", RoutingMode.INSERT)
+    app.router.route.assert_called_once_with(
+        "hello after retry",
+        RoutingMode.INSERT,
+        destination_snapshot=None,
+    )
     app.feedback.transcription_failed.assert_called_once()
     app.feedback.transcription_retrying.assert_called_once()
+
+
+def test_recovered_insert_job_routes_to_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from unittest.mock import MagicMock
+
+    import numpy as np
+    import soundfile as sf
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import DictationJob, JobStore
+    from dictation_router.transcription.whisper_cpp import TranscriptionRunResult
+
+    monkeypatch.setattr(DictationJob, "record_memory_pressure", lambda self: None)
+
+    audio_source = tmp_path / "source.wav"
+    sf.write(str(audio_source), np.zeros((1600, 1), dtype="float32"), 16000)
+    store = JobStore(tmp_path / "jobs")
+    job = store.create(RoutingMode.INSERT)
+    job.attach_audio(audio_source)
+
+    app = DictationApp(AppConfig(), MagicMock())
+    app.feedback = MagicMock()
+    app.router = MagicMock()
+    app.router.route.return_value = RouteResult(RoutingMode.REVIEW, RoutingMode.REVIEW)
+    app.transcriber = MagicMock()
+    output_prefix = job.partial_transcript_path.with_suffix("")
+    transcript_path = Path(f"{output_prefix}.txt")
+    transcript_path.write_text("recovered text", encoding="utf-8")
+    app.transcriber.transcribe_detailed.return_value = TranscriptionRunResult(
+        text="recovered text",
+        command=["whisper-cli"],
+        model="medium.en",
+        model_path=tmp_path / "ggml-medium.en.bin",
+        output_prefix=output_prefix,
+        transcript_path=transcript_path,
+        started_at="2026-06-12T00:00:00+00:00",
+        ended_at="2026-06-12T00:00:01+00:00",
+        elapsed_seconds=1.0,
+        exit_code=0,
+        stdout="",
+        stderr="",
+    )
+
+    assert app._process_job(job, recovered=True) is True
+
+    app.router.route.assert_called_once_with(
+        "recovered text",
+        RoutingMode.REVIEW,
+        destination_snapshot=None,
+    )
+    assert job.data["recovered_route_original_mode"] == "insert"
+    assert job.data["recovered_route_actual_mode"] == "review"
 
 
 def test_recover_unfinished_jobs_processes_recorded_jobs(tmp_path: Path):
@@ -373,6 +707,103 @@ def test_recover_unfinished_jobs_processes_recorded_jobs(tmp_path: Path):
 
     app.feedback.job_recovered.assert_called_once()
     app._process_job.assert_called_once()
+
+
+def test_recovery_defers_when_dictation_busy(tmp_path: Path):
+    from unittest.mock import MagicMock
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import JobStore
+
+    store = JobStore(tmp_path / "jobs")
+    job = store.create(RoutingMode.REVIEW)
+    audio_path = job.job_dir / "audio.wav"
+    audio_path.write_bytes(b"audio")
+    job.update(status="recorded", audio_file_path=str(audio_path))
+
+    app = DictationApp(AppConfig(), MagicMock())
+    app.job_store = store
+    app.recorder = MagicMock()
+    app.recorder.is_recording = True
+    app._process_job = MagicMock(return_value=True)
+
+    app._recover_unfinished_jobs()
+
+    app._process_job.assert_not_called()
+
+
+def test_hotkey_is_ignored_while_recovery_is_processing(tmp_path: Path):
+    import threading
+    from unittest.mock import MagicMock
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import JobStore
+
+    store = JobStore(tmp_path / "jobs")
+    job = store.create(RoutingMode.REVIEW)
+    audio_path = job.job_dir / "audio.wav"
+    audio_path.write_bytes(b"audio")
+    job.update(status="recorded", audio_file_path=str(audio_path))
+
+    app = DictationApp(AppConfig(), MagicMock())
+    app.job_store = store
+    app.feedback = MagicMock()
+    app.recorder = MagicMock()
+    app.recorder.is_recording = False
+    app._write_activity_state = MagicMock()
+    recovery_started = threading.Event()
+    release_recovery = threading.Event()
+
+    def process_job(_job, recovered=False) -> bool:  # noqa: ANN001, ARG001
+        recovery_started.set()
+        release_recovery.wait(timeout=1)
+        return True
+
+    app._process_job = MagicMock(side_effect=process_job)
+
+    recovery_thread = threading.Thread(target=app._recover_unfinished_jobs)
+    recovery_thread.start()
+    assert recovery_started.wait(timeout=1)
+
+    app._on_hotkey(RoutingMode.INSERT)
+
+    app.feedback.ack.assert_not_called()
+    app.recorder.start.assert_not_called()
+    release_recovery.set()
+    recovery_thread.join(timeout=1)
+    assert not recovery_thread.is_alive()
+
+
+def test_recovery_does_not_overwrite_recording_state(tmp_path: Path):
+    from unittest.mock import MagicMock
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import JobStore
+
+    store = JobStore(tmp_path / "jobs")
+    job = store.create(RoutingMode.REVIEW)
+    audio_path = job.job_dir / "audio.wav"
+    audio_path.write_bytes(b"audio")
+    job.update(status="recorded", audio_file_path=str(audio_path))
+
+    app = DictationApp(AppConfig(), MagicMock())
+    app.job_store = store
+    app.recorder = MagicMock()
+    app.recorder.is_recording = False
+    app._write_activity_state = MagicMock()
+
+    def process_job(_job, recovered=False) -> bool:  # noqa: ANN001, ARG001
+        app.recorder.is_recording = True
+        return True
+
+    app._process_job = MagicMock(side_effect=process_job)
+
+    app._recover_unfinished_jobs()
+
+    assert app._write_activity_state.call_args_list[-1].args == ("recording",)
 
 
 def test_cleanup_old_recordings_respects_retention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

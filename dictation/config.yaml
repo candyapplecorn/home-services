@@ -30,6 +30,8 @@ transcription:
 routing:
   # Use clipboard paste above this length (typing long text is slow/unreliable)
   max_typing_chars: 500
+  fallback_to_review_when_not_insertable: true
+  fallback_to_review_on_focus_change: true
 
 editor:
   preferred:
@@ -41,10 +43,12 @@ hotkeys:
   insert: "cmd+alt+ctrl+d"
   review: "cmd+alt+ctrl+r"
   clean: "cmd+alt+ctrl+c"
+  slow_start_threshold_seconds: 1.0
 
 audio:
   sample_rate: 16000
   channels: 1
+  prewarm_on_startup: true
   # Optional: set to a device index or exact device name if macOS picks the wrong input.
   # List devices with: python -m sounddevice
   device:

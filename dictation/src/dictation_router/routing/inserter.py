@@ -5,6 +5,12 @@ import time
 
 from pynput.keyboard import Controller, Key
 
+from dictation_router.routing.destination import (
+    DestinationSnapshot,
+    InsertabilityResult,
+    inspect_insertability,
+)
+
 
 class TextInserter:
     """Insert text via simulated keyboard typing with clipboard fallback."""
@@ -42,6 +48,16 @@ class TextInserter:
         finally:
             time.sleep(0.05)
             self._write_clipboard(saved)
+
+    def can_insert(
+        self,
+        stop_destination: DestinationSnapshot | None = None,
+        require_same_destination: bool = False,
+    ) -> InsertabilityResult:
+        return inspect_insertability(
+            stop_destination=stop_destination,
+            require_same_destination=require_same_destination,
+        )
 
     @staticmethod
     def _read_clipboard() -> str:
