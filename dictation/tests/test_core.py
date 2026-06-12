@@ -104,6 +104,7 @@ def test_job_store_includes_recording_without_audio_for_recovery(tmp_path: Path)
     job = store.create(RoutingMode.INSERT)
 
     assert [recoverable.job_id for recoverable in store.recoverable_jobs()] == [job.job_id]
+    assert job.status == "starting"
 
 
 def test_unrecoverable_recording_alert_is_durable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -455,6 +456,9 @@ def test_stop_recording_accepts_any_hotkey(tmp_path: Path):
     app._on_hotkey(RoutingMode.INSERT)
     assert app._active_mode == RoutingMode.INSERT
     app.recorder.start.assert_called_once()
+    started_job = app.job_store.load(app._active_job.job_dir)
+    assert started_job.status == "recording"
+    assert started_job.data["recording_raw_path"] == str(started_job.audio_path.with_suffix(".raw"))
 
     app.recorder.is_recording = True
     finished_modes: list[RoutingMode | None] = []
@@ -611,6 +615,8 @@ def test_stale_processing_state_resets_on_next_hotkey(tmp_path: Path):
     assert app._processing is False
     assert app._active_mode == RoutingMode.INSERT
     recorder.start.assert_called_once()
+    started_job = app.job_store.load(app._active_job.job_dir)
+    assert started_job.status == "recording"
 
 
 def test_finish_recording_restarts_process_when_recorder_stop_hangs():
@@ -1010,6 +1016,82 @@ def test_recover_unfinished_jobs_converts_streamed_raw_recording(tmp_path: Path)
     app._process_job.assert_called_once()
     recovered_job = store.load(job.job_dir)
     assert recovered_job.data["recovered_from_streamed_raw_path"] == str(raw_path)
+
+
+def test_recover_unfinished_starting_job_converts_streamed_raw_recording(tmp_path: Path):
+    from unittest.mock import MagicMock
+
+    import numpy as np
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import JobStore
+
+    store = JobStore(tmp_path / "jobs")
+    job = store.create(RoutingMode.INSERT)
+    raw_path = job.job_dir / "audio.raw"
+    np.ones((1600, 1), dtype="float32").tofile(raw_path)
+    job.update(
+        status="starting",
+        audio_file_path=str(job.audio_path),
+        recording_raw_path=str(raw_path),
+        audio_sample_rate=16000,
+        audio_channels=1,
+    )
+
+    app = DictationApp(AppConfig(), MagicMock())
+    app.job_store = store
+    app.feedback = MagicMock()
+    app._process_job = MagicMock(return_value=True)
+
+    app._recover_unfinished_jobs()
+
+    assert job.audio_path.is_file()
+    app.feedback.job_recovered.assert_called_once()
+    app._process_job.assert_called_once()
+
+
+def test_recover_unfinished_job_reports_empty_raw_recording(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from unittest.mock import MagicMock
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import JobStore
+
+    store = JobStore(tmp_path / "jobs")
+    job = store.create(RoutingMode.INSERT)
+    raw_path = job.job_dir / "audio.raw"
+    raw_path.write_bytes(b"")
+    job.update(
+        status="starting",
+        audio_file_path=str(job.audio_path),
+        recording_raw_path=str(raw_path),
+        audio_sample_rate=16000,
+        audio_channels=1,
+        alert_on_unrecoverable=True,
+    )
+    published: dict[str, str] = {}
+
+    def fake_alert(_job, *, reason, details, logger=None):  # noqa: ANN001, ARG001
+        published["reason"] = reason
+        published["details"] = details
+
+    monkeypatch.setattr("dictation_router.app.publish_unrecoverable_recording_alert", fake_alert)
+
+    app = DictationApp(AppConfig(), MagicMock())
+    app.job_store = store
+    app.feedback = MagicMock()
+    app._process_job = MagicMock(return_value=True)
+
+    app._recover_unfinished_jobs()
+
+    recovered_job = store.load(job.job_dir)
+    assert recovered_job.status == "failed_terminal"
+    assert recovered_job.data["raw_recording_recovery_failure"] == "empty"
+    assert recovered_job.data["last_error"] == "App exited before recording captured any audio frames"
+    assert published["reason"] == "recording_missing_audio_after_restart"
+    assert "Raw audio bytes: 0" in published["details"]
+    app._process_job.assert_not_called()
 
 
 def test_recovery_defers_when_dictation_busy(tmp_path: Path):

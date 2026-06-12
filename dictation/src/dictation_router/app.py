@@ -122,32 +122,43 @@ class DictationApp:
                 self._active_mode = mode
                 job_create_started = time.perf_counter()
                 self._active_job = self.job_store.create(mode)
+                expected_audio_path = self._active_job.audio_path
+                expected_raw_path = expected_audio_path.with_suffix(".raw")
+                self._active_job.update(
+                    status="starting",
+                    audio_file_path=str(expected_audio_path),
+                    recording_raw_path=str(expected_raw_path),
+                    audio_sample_rate=self.config.audio.sample_rate,
+                    audio_channels=self.config.audio.channels,
+                    audio_dtype="float32",
+                    audio_write_strategy="streamed_raw_pcm",
+                    recording_start_requested_at=utc_now_iso(),
+                    alert_on_unrecoverable=True,
+                    unrecoverable_alert_reason="recording_missing_audio_after_restart",
+                )
                 job_create_done = time.perf_counter()
-                self.logger.info("Recording started (%s mode)", mode.value)
                 try:
                     self._write_activity_state("starting")
                     starting_state_written = time.perf_counter()
                     self.feedback.ack()
                     ack_requested = time.perf_counter()
                     recorder_start_started = time.perf_counter()
-                    self.recorder.start(self._active_job.audio_path)
+                    self.recorder.start(expected_audio_path)
                     stream_active = time.perf_counter()
                     if self._active_job is not None:
                         raw_path = self.recorder.raw_path
                         self._active_job.update(
-                            audio_file_path=str(self._active_job.audio_path),
-                            recording_raw_path=str(raw_path) if isinstance(raw_path, Path) else None,
-                            audio_sample_rate=self.config.audio.sample_rate,
-                            audio_channels=self.config.audio.channels,
-                            audio_dtype="float32",
-                            audio_write_strategy="streamed_raw_pcm",
-                            alert_on_unrecoverable=True,
-                            unrecoverable_alert_reason="recording_missing_audio_after_restart",
+                            status="recording",
+                            recording_raw_path=(
+                                str(raw_path) if isinstance(raw_path, Path) else str(expected_raw_path)
+                            ),
+                            recording_stream_started_at=utc_now_iso(),
                         )
                     self._write_activity_state("recording")
                     recording_state_written = time.perf_counter()
                     self.feedback.recording_started()
                     recording_beep_requested = time.perf_counter()
+                    self.logger.info("Recording started (%s mode)", mode.value)
                     self._log_recording_start_timing(
                         mode=mode,
                         hotkey_received=hotkey_received,
@@ -564,13 +575,19 @@ class DictationApp:
         self._write_activity_state("processing")
         try:
             for job in jobs:
-                if job.status == "recording" and not job.audio_path.is_file():
+                if job.status in {"starting", "recording"} and not job.audio_path.is_file():
                     if self._recover_streamed_recording(job):
                         self.feedback.job_recovered()
                         with self._transcription_lock:
                             self._process_job(job, recovered=True)
                         continue
-                    last_error = "App exited before recording produced an audio file"
+                    recovery_failure = str(job.data.get("raw_recording_recovery_failure") or "")
+                    if recovery_failure == "empty":
+                        last_error = "App exited before recording captured any audio frames"
+                    elif recovery_failure == "missing":
+                        last_error = "App exited before recording produced a raw audio sidecar"
+                    else:
+                        last_error = "App exited before recording produced an audio file"
                     should_alert = bool(job.data.get("alert_on_unrecoverable"))
                     job.update(
                         status="failed_terminal",
@@ -588,6 +605,7 @@ class DictationApp:
                                 f"Job path: {job.job_dir}\n"
                                 f"Expected audio path: {job.audio_path}\n\n"
                                 f"Raw audio path: {raw_audio_path}\n\n"
+                                f"Raw audio bytes: {job.data.get('raw_recording_size_bytes', 'unknown')}\n\n"
                                 "Home Services could not find a finalized WAV or usable streamed raw "
                                 "audio sidecar for this recording, so it cannot retry transcription "
                                 "for this dictation."
@@ -614,7 +632,22 @@ class DictationApp:
 
     def _recover_streamed_recording(self, job: DictationJob) -> bool:
         raw_path = Path(str(job.data.get("recording_raw_path") or job.job_dir / "audio.raw"))
-        if not raw_path.is_file() or raw_path.stat().st_size == 0:
+        if not raw_path.is_file():
+            job.update(
+                raw_recording_path=str(raw_path),
+                raw_recording_recovery_failure="missing",
+                raw_recording_recovery_failed_at=utc_now_iso(),
+            )
+            return False
+
+        raw_size = raw_path.stat().st_size
+        if raw_size == 0:
+            job.update(
+                raw_recording_path=str(raw_path),
+                raw_recording_size_bytes=raw_size,
+                raw_recording_recovery_failure="empty",
+                raw_recording_recovery_failed_at=utc_now_iso(),
+            )
             return False
 
         sample_rate = int(job.data.get("audio_sample_rate") or self.config.audio.sample_rate)

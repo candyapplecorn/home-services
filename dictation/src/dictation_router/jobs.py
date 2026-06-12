@@ -10,6 +10,7 @@ from uuid import uuid4
 from dictation_router.config.settings import JOBS_DIR, RoutingMode
 
 RECOVERABLE_STATUSES = {
+    "starting",
     "recording",
     "recorded",
     "transcribing",
@@ -160,10 +161,12 @@ class JobStore:
                 "job_id": job_id,
                 "mode": mode.value if mode is not None else None,
                 "target_route": mode.value if mode is not None else None,
-                "status": "recording",
+                "status": "starting",
                 "created_at": now.isoformat(),
                 "updated_at": now.isoformat(),
                 "failure_count": 0,
+                "alert_on_unrecoverable": True,
+                "unrecoverable_alert_reason": "recording_missing_audio_after_restart",
             },
         )
         job.save()
