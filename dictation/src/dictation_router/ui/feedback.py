@@ -34,8 +34,23 @@ class AudioFeedback:
 
         threading.Thread(target=_double_beep, daemon=True).start()
 
+    def transcription_started(self) -> None:
+        self._play("Ping.aiff")
+
     def transcription_complete(self) -> None:
         self._play("Glass.aiff")
+
+    def transcription_failed(self) -> None:
+        self.error()
+
+    def transcription_retrying(self) -> None:
+        self._play("Submarine.aiff")
+
+    def job_recovered(self) -> None:
+        self._play("Hero.aiff")
+
+    def route_failed(self) -> None:
+        self.error()
 
     def error(self) -> None:
         self._play("Basso.aiff")

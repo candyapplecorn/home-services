@@ -173,6 +173,7 @@ Path: System Settings -> Privacy & Security.
 ~/bin/home-services/bin/home-services restart  # restart the tmux session
 ~/bin/home-services/bin/home-services attach   # start if needed, then attach
 ~/bin/home-services/bin/home-services doctor   # check dependencies
+~/bin/home-services/bin/home-services logs     # print log/job paths
 ~/bin/home-services/bin/home-services install-startup
 ~/bin/home-services/bin/home-services uninstall-startup
 ~/bin/home-services/bin/home-services install-desktop-shortcut
@@ -192,6 +193,36 @@ loaded in memory all day. Detach without stopping services with `Ctrl+b`, then
 If the tmux session is still present but one pane has disappeared,
 `home-services status` reports `status=degraded`, and `home-services start`
 recreates missing service panes without killing the whole session.
+
+## Reliability And Recovery
+
+Dictation stores each stopped recording as a durable job under:
+
+```text
+~/Library/Application Support/DictationRouter/jobs/<job_id>/
+```
+
+Each job keeps:
+
+```text
+audio.wav
+job.json
+stdout.log
+stderr.log
+memory_pressure.txt
+transcript.partial.txt
+transcript.final.txt
+status.txt
+```
+
+The reliability goals are:
+
+- No stopped dictation audio is lost if transcription crashes.
+- Every transcription failure keeps the exit code, stdout, stderr, command, model, and audio path.
+- On app startup, unfinished recorded/transcribing/transcribed/retryable jobs are recovered.
+- Jobs remember their original routing mode.
+- Failed transcriptions retry once with the same model, then optionally with the smaller fallback model.
+- If retry fails, the error is logged and the recording remains available in the job folder.
 
 ## Shell Alias
 
@@ -250,7 +281,7 @@ The app runs without a Dock icon and adds an `HS` menu bar item with controls fo
 
 - Start, stop, restart, and status
 - Opening the tmux session in Terminal
-- Opening dictation config and logs
+- Opening dictation config, HomeServices logs, DictationRouter logs, and job folders
 - Running `home-services doctor`
 - Installing or removing the login startup task
 - Creating the Desktop launcher
@@ -268,6 +299,13 @@ transcription:
   model: medium.en
   whisper_cli: whisper-cli
   whisper_models_dir: ~/.cache/whisper-cpp
+  threads: 4
+  processors: 1
+  metal: true
+  max_audio_minutes: 10
+  retry_count: 1
+  retry_with_smaller_model: true
+  fallback_model: small.en
 
 hotkeys:
   insert: "cmd+alt+ctrl+d"

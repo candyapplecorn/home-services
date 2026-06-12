@@ -12,6 +12,7 @@ APP_SUPPORT = Path.home() / "Library/Application Support/DictationRouter"
 TRANSCRIPTS_DIR = APP_SUPPORT / "transcripts"
 LOGS_DIR = APP_SUPPORT / "logs"
 RECORDINGS_DIR = APP_SUPPORT / "recordings"
+JOBS_DIR = APP_SUPPORT / "jobs"
 STATE_FILE = APP_SUPPORT / "state"
 
 
@@ -35,6 +36,13 @@ class TranscriptionConfig:
     edge_hallucinations: list[str] = field(default_factory=lambda: ["you"])
     processing_timeout_seconds: float = 30.0
     recording_stop_timeout_seconds: float = 15.0
+    threads: int = 4
+    processors: int = 1
+    metal: bool = True
+    max_audio_minutes: float = 10.0
+    retry_count: int = 1
+    retry_with_smaller_model: bool = True
+    fallback_model: str = "small.en"
 
 
 @dataclass
@@ -106,6 +114,13 @@ def load_config(path: Path | None = None) -> AppConfig:
             recording_stop_timeout_seconds=float(
                 transcription_raw.get("recording_stop_timeout_seconds", 15.0)
             ),
+            threads=int(transcription_raw.get("threads", 4)),
+            processors=int(transcription_raw.get("processors", 1)),
+            metal=bool(transcription_raw.get("metal", True)),
+            max_audio_minutes=float(transcription_raw.get("max_audio_minutes", 10.0)),
+            retry_count=int(transcription_raw.get("retry_count", 1)),
+            retry_with_smaller_model=bool(transcription_raw.get("retry_with_smaller_model", True)),
+            fallback_model=transcription_raw.get("fallback_model", "small.en"),
         ),
         routing=RoutingConfig(
             max_typing_chars=int(routing_raw.get("max_typing_chars", 500)),
@@ -127,5 +142,5 @@ def load_config(path: Path | None = None) -> AppConfig:
 
 
 def ensure_app_dirs() -> None:
-    for directory in (APP_SUPPORT, TRANSCRIPTS_DIR, LOGS_DIR, RECORDINGS_DIR):
+    for directory in (APP_SUPPORT, TRANSCRIPTS_DIR, LOGS_DIR, RECORDINGS_DIR, JOBS_DIR):
         directory.mkdir(parents=True, exist_ok=True)

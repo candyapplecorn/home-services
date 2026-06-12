@@ -12,7 +12,11 @@ AI_HELPER_BIN="${HOME_SERVICES_AI_HELPER_BIN:-$ROOT/bin/ai-helper}"
 APP_SUPPORT="${HOME_SERVICES_APP_SUPPORT:-$HOME/Library/Application Support/HomeServices}"
 LOG_DIR="$APP_SUPPORT/logs"
 MOVIEWATCH_LOG="$LOG_DIR/moviewatch.log"
-DICTATION_STATE_FILE="$HOME/Library/Application Support/DictationRouter/state"
+DICTATION_APP_SUPPORT="${DICTATION_ROUTER_APP_SUPPORT:-$HOME/Library/Application Support/DictationRouter}"
+DICTATION_LOG_DIR="$DICTATION_APP_SUPPORT/logs"
+DICTATION_TRANSCRIPTS_DIR="$DICTATION_APP_SUPPORT/transcripts"
+DICTATION_JOBS_DIR="$DICTATION_APP_SUPPORT/jobs"
+DICTATION_STATE_FILE="$DICTATION_APP_SUPPORT/state"
 LAUNCH_AGENT_LABEL="${HOME_SERVICES_LAUNCH_AGENT_LABEL:-com.jburger.home-services}"
 LAUNCH_AGENT_PLIST="${HOME_SERVICES_LAUNCH_AGENT_PLIST:-$HOME/Library/LaunchAgents/$LAUNCH_AGENT_LABEL.plist}"
 DESKTOP_SHORTCUT="${HOME_SERVICES_DESKTOP_SHORTCUT:-$HOME/Desktop/Home Services.command}"
@@ -39,7 +43,7 @@ Usage:
                                 Create a double-click Desktop launcher
   home-services ai-helper ...   Run the experimental on-demand AI helper
   home-services open-config     Open dictation/config.yaml
-  home-services open-logs       Open the HomeServices log directory
+  home-services open-logs       Open HomeServices and DictationRouter logs
   home-services -a              Backward-compatible alias for attach
   home-services -r              Backward-compatible alias for restart
   home-services --help          Show this help
@@ -231,8 +235,9 @@ status_services() {
 }
 
 logs_services() {
-  echo "dictation_logs=$HOME/Library/Application Support/DictationRouter/logs"
-  echo "dictation_transcripts=$HOME/Library/Application Support/DictationRouter/transcripts"
+  echo "dictation_logs=$DICTATION_LOG_DIR"
+  echo "dictation_jobs=$DICTATION_JOBS_DIR"
+  echo "dictation_transcripts=$DICTATION_TRANSCRIPTS_DIR"
   echo "moviewatch_log=$MOVIEWATCH_LOG"
   echo "experimental_ai_helper_recordings=$HOME/Library/Application Support/HomeServices/ai-helper/recordings"
 }
@@ -415,8 +420,11 @@ open_config() {
 }
 
 open_logs() {
-  mkdir -p "$LOG_DIR"
-  open "$LOG_DIR"
+  local path
+  mkdir -p "$LOG_DIR" "$DICTATION_LOG_DIR" "$DICTATION_JOBS_DIR"
+  for path in "$LOG_DIR" "$DICTATION_LOG_DIR" "$DICTATION_JOBS_DIR"; do
+    open "$path"
+  done
 }
 
 run_ai_helper() {

@@ -216,6 +216,165 @@ def test_finish_recording_restarts_process_when_recorder_stop_hangs():
     app.feedback.error.assert_called_once()
 
 
+def test_job_store_persists_and_recovers_recorded_job(tmp_path: Path):
+    from dictation_router.jobs import JobStore
+
+    store = JobStore(tmp_path / "jobs")
+    job = store.create(RoutingMode.REVIEW)
+    audio_source = tmp_path / "source.wav"
+    audio_source.write_bytes(b"fake audio")
+
+    job.attach_audio(audio_source)
+    job.update(status="failed_retryable", last_error="temporary failure")
+
+    assert job.job_json_path.is_file()
+    assert job.status_path.read_text(encoding="utf-8") == "failed_retryable\n"
+    assert job.audio_path.read_bytes() == b"fake audio"
+    assert [recovered.job_id for recovered in store.recoverable_jobs()] == [job.job_id]
+
+
+def test_whisper_transcriber_captures_stdout_stderr_and_command(tmp_path: Path):
+    from subprocess import CompletedProcess
+    from unittest.mock import patch
+
+    from dictation_router.transcription.whisper_cpp import WhisperCppTranscriber
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "ggml-small.en.bin").write_bytes(b"model")
+    audio_path = tmp_path / "audio.wav"
+    audio_path.write_bytes(b"audio")
+    output_prefix = tmp_path / "job" / "transcript.partial"
+    output_prefix.parent.mkdir()
+
+    def fake_run(cmd, capture_output, text, check):  # noqa: ARG001
+        transcript_path = Path(f"{cmd[cmd.index('-of') + 1]}.txt")
+        transcript_path.write_text("hello world", encoding="utf-8")
+        return CompletedProcess(cmd, 0, stdout="stdout details", stderr="stderr details")
+
+    transcriber = WhisperCppTranscriber(
+        model="small.en",
+        whisper_cli="whisper-cli",
+        models_dir=models_dir,
+        threads=3,
+        processors=1,
+        metal=False,
+    )
+
+    with patch("dictation_router.transcription.whisper_cpp.subprocess.run", side_effect=fake_run):
+        result = transcriber.transcribe_detailed(
+            audio_path,
+            output_prefix=output_prefix,
+            stdout_path=tmp_path / "stdout.log",
+            stderr_path=tmp_path / "stderr.log",
+        )
+
+    assert result.text == "hello world"
+    assert result.exit_code == 0
+    assert "-t" in result.command
+    assert "3" in result.command
+    assert "-ng" in result.command
+    assert (tmp_path / "stdout.log").read_text(encoding="utf-8") == "stdout details"
+    assert (tmp_path / "stderr.log").read_text(encoding="utf-8") == "stderr details"
+
+
+def test_process_job_retries_failed_transcription_and_preserves_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from unittest.mock import MagicMock
+
+    import numpy as np
+    import soundfile as sf
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import DictationJob, JobStore
+    from dictation_router.transcription.whisper_cpp import TranscriptionRunResult
+
+    monkeypatch.setattr(DictationJob, "record_memory_pressure", lambda self: None)
+
+    audio_source = tmp_path / "source.wav"
+    sf.write(str(audio_source), np.zeros((1600, 1), dtype="float32"), 16000)
+
+    store = JobStore(tmp_path / "jobs")
+    job = store.create(RoutingMode.INSERT)
+    job.attach_audio(audio_source)
+
+    config = AppConfig()
+    config.transcription.retry_count = 1
+    config.transcription.retry_with_smaller_model = False
+    app = DictationApp(config, MagicMock())
+    app.job_store = store
+    app.router = MagicMock()
+    app.feedback = MagicMock()
+
+    def successful_result(*args, **kwargs):  # noqa: ANN002, ANN003
+        output_prefix = kwargs["output_prefix"]
+        transcript_path = Path(f"{output_prefix}.txt")
+        transcript_path.write_text("hello after retry", encoding="utf-8")
+        return TranscriptionRunResult(
+            text="hello after retry",
+            command=["whisper-cli", "-f", str(job.audio_path)],
+            model="medium.en",
+            model_path=tmp_path / "ggml-medium.en.bin",
+            output_prefix=output_prefix,
+            transcript_path=transcript_path,
+            started_at="2026-06-12T00:00:00+00:00",
+            ended_at="2026-06-12T00:00:01+00:00",
+            elapsed_seconds=1.0,
+            exit_code=0,
+            stdout="ok",
+            stderr="",
+        )
+
+    calls = {"count": 0}
+
+    def transcribe_side_effect(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("temporary whisper failure")
+        return successful_result(*args, **kwargs)
+
+    app.transcriber = MagicMock()
+    app.transcriber.transcribe_detailed.side_effect = transcribe_side_effect
+
+    assert app._process_job(job) is True
+
+    assert job.status == "completed"
+    assert job.data["failure_count"] == 1
+    assert job.audio_path.is_file()
+    assert job.final_transcript_path.read_text(encoding="utf-8") == "hello after retry"
+    assert app.transcriber.transcribe_detailed.call_count == 2
+    app.router.route.assert_called_once_with("hello after retry", RoutingMode.INSERT)
+    app.feedback.transcription_failed.assert_called_once()
+    app.feedback.transcription_retrying.assert_called_once()
+
+
+def test_recover_unfinished_jobs_processes_recorded_jobs(tmp_path: Path):
+    from unittest.mock import MagicMock
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import JobStore
+
+    store = JobStore(tmp_path / "jobs")
+    job = store.create(RoutingMode.CLEAN)
+    audio_path = job.job_dir / "audio.wav"
+    audio_path.write_bytes(b"audio")
+    job.update(status="recorded", audio_file_path=str(audio_path))
+
+    app = DictationApp(AppConfig(), MagicMock())
+    app.job_store = store
+    app.feedback = MagicMock()
+    app._process_job = MagicMock(return_value=True)
+
+    app._recover_unfinished_jobs()
+
+    app.feedback.job_recovered.assert_called_once()
+    app._process_job.assert_called_once()
+
+
 def test_cleanup_old_recordings_respects_retention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from unittest.mock import MagicMock
 

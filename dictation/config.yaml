@@ -17,6 +17,15 @@ transcription:
   processing_timeout_seconds: 30
   # Bound PortAudio shutdown/WAV flush so memory pressure cannot leave hotkeys wedged.
   recording_stop_timeout_seconds: 15
+  # Keep whisper.cpp bounded under memory pressure.
+  threads: 4
+  processors: 1
+  metal: true
+  max_audio_minutes: 10
+  # Reliability: retry once with the same model, then try the smaller fallback model.
+  retry_count: 1
+  retry_with_smaller_model: true
+  fallback_model: small.en
 
 routing:
   # Use clipboard paste above this length (typing long text is slow/unreliable)

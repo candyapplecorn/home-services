@@ -43,6 +43,15 @@ Core principles:
 - Make insert, review, and clean behavior predictable when the active app changes during transcription.
 - Add tests around routing, cleanup, config parsing, and threshold handling.
 
+#### V1.1 Reliability Goals
+
+- No dictation audio is lost if transcription crashes after recording stops.
+- Every transcription failure produces logs with exit code, stdout, stderr, command, model, and audio path.
+- On app startup, unfinished jobs are automatically recovered.
+- Jobs remember their original routing mode.
+- Failed transcriptions are retried once.
+- If retry fails, the user gets failure feedback and the recording remains available.
+
 ### Moviewatch Maintenance
 
 - Document expected input and output behavior.

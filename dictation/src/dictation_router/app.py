@@ -19,6 +19,7 @@ from dictation_router.config.settings import (
     RoutingMode,
     ensure_app_dirs,
 )
+from dictation_router.jobs import DictationJob, JobStore, utc_now_iso
 from dictation_router.routing.editor import EditorLauncher
 from dictation_router.routing.inserter import TextInserter
 from dictation_router.routing.router import Router
@@ -26,7 +27,7 @@ from dictation_router.transcription.postprocess import (
     normalize_transcript_newlines,
     strip_edge_hallucinations,
 )
-from dictation_router.transcription.whisper_cpp import WhisperCppTranscriber
+from dictation_router.transcription.whisper_cpp import WhisperCppError, WhisperCppTranscriber
 from dictation_router.ui.feedback import AudioFeedback
 from dictation_router.ui.hotkeys import HotkeyManager
 from dictation_router.ui.permissions import check_accessibility, describe_hotkey
@@ -40,6 +41,7 @@ class DictationApp:
         self.logger = logger
         self.feedback = AudioFeedback()
         self.recorder = self._new_recorder()
+        self.job_store = JobStore()
         self.transcriber = WhisperCppTranscriber(
             model=config.transcription.model,
             whisper_cli=config.transcription.whisper_cli,
@@ -47,6 +49,9 @@ class DictationApp:
             split_on_word=config.transcription.split_on_word,
             no_speech_threshold=config.transcription.no_speech_threshold,
             logprob_threshold=config.transcription.logprob_threshold,
+            threads=config.transcription.threads,
+            processors=config.transcription.processors,
+            metal=config.transcription.metal,
         )
         self.router = Router(
             inserter=TextInserter(max_typing_chars=config.routing.max_typing_chars),
@@ -57,6 +62,7 @@ class DictationApp:
         self._active_mode: RoutingMode | None = None
         self._processing = False
         self._processing_started_at: float | None = None
+        self._active_job: DictationJob | None = None
         self._keep_recordings = config.transcription.keep_recordings
         self._min_chars_per_minute = config.transcription.min_chars_per_minute
         self._hotkeys = HotkeyManager(
@@ -97,6 +103,7 @@ class DictationApp:
 
             if not self.recorder.is_recording:
                 self._active_mode = mode
+                self._active_job = self.job_store.create(mode)
                 self.logger.info("Recording started (%s mode)", mode.value)
                 try:
                     self.recorder.start()
@@ -106,6 +113,13 @@ class DictationApp:
                     self.logger.exception("Failed to start recording: %s", exc)
                     self.feedback.error()
                     self._write_activity_state("idle")
+                    if self._active_job is not None:
+                        self._active_job.update(
+                            status="failed_terminal",
+                            last_error=f"Failed to start recording: {exc}",
+                            failed_at=utc_now_iso(),
+                        )
+                    self._active_job = None
                     self._active_mode = None
                 return
 
@@ -127,22 +141,35 @@ class DictationApp:
         ).start()
 
     def _finish_recording(self, mode: RoutingMode | None) -> None:
+        source_audio_path: Path | None = None
+        job_audio_path: Path | None = None
+        job = self._active_job
         try:
             self.logger.info("Recording stopped (%s mode)", mode.value if mode else "unknown")
             self.feedback.recording_stopped()
 
             self.logger.info("Stopping audio stream and writing recording")
-            audio_path = self._stop_recorder_with_timeout()
+            source_audio_path = self._stop_recorder_with_timeout()
             self.logger.info("Audio stream stopped; inspecting recording")
-            duration_s = sf.info(str(audio_path)).duration
-            audio, _sample_rate = sf.read(str(audio_path), dtype="float32", always_2d=True)
+            if job is None:
+                job = self.job_store.create(mode)
+            job_audio_path = job.attach_audio(source_audio_path)
+
+            duration_s = sf.info(str(job_audio_path)).duration
+            audio, _sample_rate = sf.read(str(job_audio_path), dtype="float32", always_2d=True)
             peak_level = float(np.max(np.abs(audio))) if audio.size else 0.0
             rms_level = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+            job.update(
+                audio_duration_seconds=duration_s,
+                audio_peak_level=peak_level,
+                audio_rms_level=rms_level,
+                audio_file_size_bytes=job_audio_path.stat().st_size,
+            )
             self.logger.info(
                 "Saved recording to %s (%.1fs, %.1f KB, peak %.4f, rms %.4f)",
-                audio_path,
+                job_audio_path,
                 duration_s,
-                audio_path.stat().st_size / 1024,
+                job_audio_path.stat().st_size / 1024,
                 peak_level,
                 rms_level,
             )
@@ -154,10 +181,123 @@ class DictationApp:
                     rms_level,
                 )
 
-            started = time.perf_counter()
-            transcript = self.transcriber.transcribe(audio_path)
+            self._process_job(job)
+        except Exception as exc:
+            self.logger.exception("Processing failed: %s", exc)
+            if job is not None:
+                job.update(
+                    status="failed_terminal",
+                    last_error=str(exc),
+                    failed_at=utc_now_iso(),
+                )
+            self.feedback.error()
+        finally:
+            with self._lock:
+                self._active_mode = None
+                self._processing = False
+                self._processing_started_at = None
+                self._active_job = None
+            self._write_activity_state("idle")
+            self._cleanup_recording(source_audio_path)
+            self._cleanup_old_recordings()
+
+    def _process_job(self, job: DictationJob, recovered: bool = False) -> bool:
+        mode = job.mode
+        audio_path = job.audio_path
+        if not audio_path.is_file():
+            job.update(
+                status="failed_terminal",
+                last_error=f"Missing audio file for job: {audio_path}",
+                failed_at=utc_now_iso(),
+            )
+            self.logger.error("Cannot process job %s; missing audio file %s", job.job_id, audio_path)
+            self.feedback.error()
+            return False
+
+        duration_s = float(job.data.get("audio_duration_seconds") or sf.info(str(audio_path)).duration)
+        max_audio_seconds = self.config.transcription.max_audio_minutes * 60
+        if max_audio_seconds > 0 and duration_s > max_audio_seconds:
+            job.update(
+                status="failed_terminal",
+                last_error=(
+                    f"Audio duration {duration_s:.1f}s exceeds max_audio_minutes "
+                    f"{self.config.transcription.max_audio_minutes:.1f}"
+                ),
+                failed_at=utc_now_iso(),
+            )
+            self.logger.error("Job %s audio exceeds configured max duration; preserving %s", job.job_id, audio_path)
+            self.feedback.error()
+            return False
+
+        models = self._attempt_models()
+        failure_count = int(job.data.get("failure_count", 0))
+        if recovered:
+            self.logger.info("Recovering dictation job %s from status=%s", job.job_id, job.status)
+
+        while failure_count < len(models):
+            model = models[failure_count]
+            attempt_number = failure_count + 1
+            job.update(
+                status="transcribing",
+                attempt_number=attempt_number,
+                max_attempts=len(models),
+                model=model,
+                transcription_started_at=utc_now_iso(),
+            )
+            job.record_memory_pressure()
+            self.feedback.transcription_started()
+
+            try:
+                result = self.transcriber.transcribe_detailed(
+                    audio_path,
+                    output_prefix=job.partial_transcript_path.with_suffix(""),
+                    stdout_path=job.stdout_path,
+                    stderr_path=job.stderr_path,
+                    model=model,
+                )
+            except Exception as exc:
+                failure_count += 1
+                retryable = failure_count < len(models)
+                failure_metadata = exc.result.to_metadata() if isinstance(exc, WhisperCppError) else {}
+                job.update(
+                    **failure_metadata,
+                    status="failed_retryable" if retryable else "failed_terminal",
+                    failure_count=failure_count,
+                    retry_count=max(0, failure_count - 1),
+                    last_error=str(exc),
+                    last_exception_type=type(exc).__name__,
+                    stdout_log=str(job.stdout_path),
+                    stderr_log=str(job.stderr_path),
+                    audio_file_path=str(audio_path),
+                    failed_at=utc_now_iso(),
+                )
+                self.logger.exception(
+                    "Transcription job %s failed attempt %d/%d with model %s: %s",
+                    job.job_id,
+                    attempt_number,
+                    len(models),
+                    model,
+                    exc,
+                )
+                self.feedback.transcription_failed()
+                if retryable:
+                    self.logger.info("Retrying dictation job %s", job.job_id)
+                    self.feedback.transcription_retrying()
+                    continue
+                return False
+
+            job.write_text(job.partial_transcript_path, result.text)
+            job.update(
+                **result.to_metadata(),
+                status="transcribed",
+                failure_count=failure_count,
+                stdout_log=str(job.stdout_path),
+                stderr_log=str(job.stderr_path),
+                audio_file_path=str(audio_path),
+            )
+
             transcript, removed_hallucinations = strip_edge_hallucinations(
-                transcript,
+                result.text,
                 self.config.transcription.edge_hallucinations,
             )
             transcript = normalize_transcript_newlines(transcript)
@@ -166,40 +306,88 @@ class DictationApp:
                     "Removed likely edge hallucination(s): %s",
                     ", ".join(removed_hallucinations),
                 )
-            elapsed = time.perf_counter() - started
+
+            job.write_text(job.final_transcript_path, transcript)
+            chars_per_min = (len(transcript) / duration_s * 60) if duration_s > 0 else 0
             self.logger.info(
                 "Transcription completed in %.2fs (%d chars, %.0f chars/min of audio)",
-                elapsed,
+                result.elapsed_seconds,
                 len(transcript),
-                (len(transcript) / duration_s * 60) if duration_s > 0 else 0,
+                chars_per_min,
             )
-            if duration_s >= 30:
-                chars_per_min = len(transcript) / duration_s * 60
-                if chars_per_min < self._min_chars_per_minute:
-                    self.logger.warning(
-                        "Low transcript density (%.0f chars/min, expected ~400+ for continuous speech). "
-                        "Whisper may have skipped quiet/pause segments. "
-                        "Try review mode, speak closer to mic, or lower transcription.no_speech_threshold.",
-                        chars_per_min,
-                    )
+            if duration_s >= 30 and chars_per_min < self._min_chars_per_minute:
+                self.logger.warning(
+                    "Low transcript density (%.0f chars/min, expected ~400+ for continuous speech). "
+                    "Whisper may have skipped quiet/pause segments. "
+                    "Try review mode, speak closer to mic, or lower transcription.no_speech_threshold.",
+                    chars_per_min,
+                )
 
-            if not transcript:
-                self.logger.warning("Transcript empty after post-processing; skipping routing")
-            elif mode is not None:
-                self.router.route(transcript, mode)
+            job.update(
+                status="routing",
+                final_transcript_path=str(job.final_transcript_path),
+                transcript_characters=len(transcript),
+                transcript_chars_per_minute=chars_per_min,
+            )
+
+            try:
+                routed = False
+                if not transcript:
+                    self.logger.warning("Transcript empty after post-processing; skipping routing")
+                elif mode is not None:
+                    self.router.route(transcript, mode)
+                    routed = True
+                job.update(
+                    status="completed",
+                    routed=routed,
+                    route_completed_at=utc_now_iso(),
+                )
+            except Exception as exc:
+                job.update(
+                    status="route_failed",
+                    last_error=str(exc),
+                    last_exception_type=type(exc).__name__,
+                    failed_at=utc_now_iso(),
+                )
+                self.logger.exception("Routing failed for dictation job %s: %s", job.job_id, exc)
+                self.feedback.route_failed()
+                return False
 
             self.feedback.transcription_complete()
-        except Exception as exc:
-            self.logger.exception("Processing failed: %s", exc)
-            self.feedback.error()
-        finally:
-            with self._lock:
-                self._active_mode = None
-                self._processing = False
-                self._processing_started_at = None
-            self._write_activity_state("idle")
-            self._cleanup_recording(audio_path if "audio_path" in locals() else None)
-            self._cleanup_old_recordings()
+            return True
+
+        return False
+
+    def _attempt_models(self) -> list[str]:
+        models = [self.config.transcription.model]
+        models.extend([self.config.transcription.model] * max(0, self.config.transcription.retry_count))
+        fallback_model = self.config.transcription.fallback_model
+        if (
+            self.config.transcription.retry_with_smaller_model
+            and fallback_model
+            and fallback_model != self.config.transcription.model
+        ):
+            models.append(fallback_model)
+        return models
+
+    def _recover_unfinished_jobs(self) -> None:
+        jobs = self.job_store.recoverable_jobs()
+        if not jobs:
+            return
+
+        self.logger.info("Recovering %d unfinished dictation job(s)", len(jobs))
+        self._write_activity_state("processing")
+        for job in jobs:
+            if job.status == "recording" and not job.audio_path.is_file():
+                job.update(
+                    status="failed_terminal",
+                    last_error="App exited before recording produced an audio file",
+                    failed_at=utc_now_iso(),
+                )
+                continue
+            self.feedback.job_recovered()
+            self._process_job(job, recovered=True)
+        self._write_activity_state("idle")
 
     def _write_activity_state(self, state: str) -> None:
         try:
@@ -271,6 +459,7 @@ class DictationApp:
         ensure_app_dirs()
         self._write_activity_state("idle")
         self._cleanup_old_recordings()
+        self._recover_unfinished_jobs()
         self.logger.info("Dictation Router started")
         self.logger.info(
             "Insert: %s  (%s)",
