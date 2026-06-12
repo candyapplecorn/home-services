@@ -60,7 +60,7 @@ def strip_edge_hallucinations(text: str, hallucinations: list[str]) -> tuple[str
         return "", [cleaned]
 
     leading = re.compile(rf"^({token_pattern})(?:[\s,.;:!?-]+)(.+)$", re.IGNORECASE | re.DOTALL)
-    trailing = re.compile(rf"^(.+?)(?:[\s,.;:!?-]+)({token_pattern})[\s,.;:!?-]*$", re.IGNORECASE | re.DOTALL)
+    trailing = re.compile(rf"^(.+?)([\s,.;:!?-]+)({token_pattern})[\s,.;:!?-]*$", re.IGNORECASE | re.DOTALL)
 
     while True:
         match = leading.match(cleaned)
@@ -73,8 +73,8 @@ def strip_edge_hallucinations(text: str, hallucinations: list[str]) -> tuple[str
         match = trailing.match(cleaned)
         if not match:
             break
-        removed.append(match.group(2))
-        cleaned = match.group(1).strip()
+        removed.append(match.group(3))
+        cleaned = _preserve_terminal_punctuation(match.group(1), match.group(2)).strip()
 
     glued_suffix = re.compile(rf"^(.{{4,}})({token_pattern})$", re.IGNORECASE | re.DOTALL)
     while True:
@@ -89,3 +89,15 @@ def strip_edge_hallucinations(text: str, hallucinations: list[str]) -> tuple[str
         cleaned = stem.strip()
 
     return cleaned, removed
+
+
+def _preserve_terminal_punctuation(stem: str, separator: str) -> str:
+    stripped_stem = stem.rstrip()
+    if not stripped_stem or stripped_stem[-1] in ".!?":
+        return stripped_stem
+
+    separator_marks = re.search(r"[.!?]+$", separator.strip())
+    if separator_marks:
+        return stripped_stem + separator_marks.group(0)
+
+    return stripped_stem

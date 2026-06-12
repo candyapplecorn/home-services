@@ -57,6 +57,160 @@ private final class CommandRunner {
     }
 }
 
+private struct StartupState {
+    var installed: Bool?
+    var loaded: Bool?
+}
+
+private struct DictationHotkeys {
+    var insert = "cmd+alt+ctrl+d"
+    var review = "cmd+alt+ctrl+r"
+    var clean = "cmd+alt+ctrl+c"
+
+    static func load(rootPath: String) -> DictationHotkeys {
+        let configPath = URL(fileURLWithPath: rootPath).appendingPathComponent("dictation/config.yaml")
+        guard let text = try? String(contentsOf: configPath, encoding: .utf8) else {
+            return DictationHotkeys()
+        }
+
+        var hotkeys = DictationHotkeys()
+        var inHotkeys = false
+        for rawLine in text.components(separatedBy: .newlines) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") {
+                continue
+            }
+            if trimmed == "hotkeys:" {
+                inHotkeys = true
+                continue
+            }
+            if inHotkeys && !rawLine.hasPrefix(" ") && !rawLine.hasPrefix("\t") {
+                break
+            }
+            guard inHotkeys, let colon = trimmed.firstIndex(of: ":") else {
+                continue
+            }
+            let key = String(trimmed[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawValue = String(trimmed[trimmed.index(after: colon)...])
+            let value = cleanYamlScalar(rawValue)
+            if value.isEmpty {
+                continue
+            }
+            switch key {
+            case "insert":
+                hotkeys.insert = value
+            case "review":
+                hotkeys.review = value
+            case "clean":
+                hotkeys.clean = value
+            default:
+                continue
+            }
+        }
+        return hotkeys
+    }
+
+    private static func cleanYamlScalar(_ value: String) -> String {
+        var cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let comment = cleaned.firstIndex(of: "#") {
+            cleaned = String(cleaned[..<comment]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if cleaned.count >= 2,
+           let first = cleaned.first,
+           let last = cleaned.last,
+           (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+            cleaned.removeFirst()
+            cleaned.removeLast()
+        }
+        return cleaned
+    }
+}
+
+private struct MenuHotkey {
+    var keyEquivalent: String
+    var modifiers: NSEvent.ModifierFlags
+    var display: String
+}
+
+private func parseMenuHotkey(_ hotkey: String) -> MenuHotkey? {
+    let parts = hotkey
+        .split(separator: "+")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        .filter { !$0.isEmpty }
+    guard !parts.isEmpty else {
+        return nil
+    }
+
+    var modifiers: NSEvent.ModifierFlags = []
+    var displayModifiers: [String] = []
+    let modifierParts = parts.dropLast()
+    let keyPart = String(parts.last!)
+
+    func addModifier(_ modifier: NSEvent.ModifierFlags, _ symbol: String) {
+        if !modifiers.contains(modifier) {
+            modifiers.insert(modifier)
+            displayModifiers.append(symbol)
+        }
+    }
+
+    for part in modifierParts {
+        switch part {
+        case "hyper":
+            addModifier(.control, "⌃")
+            addModifier(.option, "⌥")
+            addModifier(.shift, "⇧")
+            addModifier(.command, "⌘")
+        case "ctrl", "control":
+            addModifier(.control, "⌃")
+        case "alt", "option", "opt":
+            addModifier(.option, "⌥")
+        case "shift":
+            addModifier(.shift, "⇧")
+        case "cmd", "command", "meta", "super":
+            addModifier(.command, "⌘")
+        default:
+            return nil
+        }
+    }
+
+    let keyEquivalent: String
+    let displayKey: String
+    switch keyPart {
+    case "space":
+        keyEquivalent = " "
+        displayKey = "Space"
+    case "enter":
+        keyEquivalent = "\r"
+        displayKey = "↩"
+    case "tab":
+        keyEquivalent = "\t"
+        displayKey = "⇥"
+    case "escape":
+        keyEquivalent = "\u{1b}"
+        displayKey = "⎋"
+    default:
+        guard keyPart.count == 1 else {
+            return nil
+        }
+        keyEquivalent = keyPart.lowercased()
+        displayKey = keyPart.uppercased()
+    }
+
+    guard !modifiers.isEmpty else {
+        return nil
+    }
+
+    return MenuHotkey(
+        keyEquivalent: keyEquivalent,
+        modifiers: modifiers,
+        display: displayModifiers.joined() + displayKey
+    )
+}
+
+private func displayHotkey(_ hotkey: String) -> String {
+    parseMenuHotkey(hotkey)?.display ?? hotkey
+}
+
 @MainActor
 private final class DiagnosticsWindowController: NSWindowController, NSWindowDelegate {
     private let runner: CommandRunner
@@ -117,10 +271,24 @@ private final class DiagnosticsWindowController: NSWindowController, NSWindowDel
         textView.isSelectable = true
         textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         textView.textContainerInset = NSSize(width: 12, height: 12)
+        textView.drawsBackground = true
+        textView.backgroundColor = .textBackgroundColor
+        textView.textColor = .labelColor
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = true
         textView.string = "Loading..."
 
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .bezelBorder
+        textView.frame = NSRect(x: 0, y: 0, width: 720, height: 480)
         scrollView.documentView = textView
 
         let stack = NSStackView(views: [header, scrollView])
@@ -135,7 +303,8 @@ private final class DiagnosticsWindowController: NSWindowController, NSWindowDel
             stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -16),
             stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 16),
             stack.bottomAnchor.constraint(equalTo: window.contentView!.bottomAnchor, constant: -16),
-            header.heightAnchor.constraint(equalToConstant: 32)
+            header.heightAnchor.constraint(equalToConstant: 32),
+            scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 420)
         ])
     }
 
@@ -194,16 +363,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusLine = "Checking..."
     private var dictationState = "unknown"
     private var detailLines: [String] = []
+    private var startupState = StartupState()
+    private var lastStartupRefresh = Date.distantPast
+    private var hotkeys = DictationHotkeys()
     private var timer: Timer?
     private var diagnosticsWindowController: DiagnosticsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        hotkeys = DictationHotkeys.load(rootPath: runner.rootPath)
         statusItem.button?.title = "HS"
         statusItem.button?.toolTip = "Home Services"
         statusItem.menu = menu
         rebuildMenu()
         refreshStatus()
+        refreshStartupStatus(force: true)
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshStatus()
@@ -248,6 +422,31 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.detailLines = Array(lines.dropFirst()).filter { !$0.hasPrefix("dictation_state=") }
             self.updateStatusButton()
+            self.rebuildMenu()
+            self.refreshStartupStatusIfNeeded()
+        }
+    }
+
+    private func refreshStartupStatusIfNeeded() {
+        if Date().timeIntervalSince(lastStartupRefresh) >= 10 {
+            refreshStartupStatus(force: true)
+        }
+    }
+
+    private func refreshStartupStatus(force: Bool = false) {
+        if !force && Date().timeIntervalSince(lastStartupRefresh) < 10 {
+            return
+        }
+        lastStartupRefresh = Date()
+        runner.run(["startup-status"]) { [weak self] _, output in
+            guard let self else { return }
+            let lines = output.split(separator: "\n").map(String.init)
+            let installed = lines.first { $0.hasPrefix("startup_installed=") }?
+                .replacingOccurrences(of: "startup_installed=", with: "")
+            let loaded = lines.first { $0.hasPrefix("startup_loaded=") }?
+                .replacingOccurrences(of: "startup_loaded=", with: "")
+            self.startupState.installed = installed == "yes" ? true : (installed == "no" ? false : nil)
+            self.startupState.loaded = loaded == "yes" ? true : (loaded == "no" ? false : nil)
             self.rebuildMenu()
         }
     }
@@ -303,6 +502,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu() {
         menu.removeAllItems()
+        hotkeys = DictationHotkeys.load(rootPath: runner.rootPath)
+
+        let servicesStopped = statusLine == "Stopped"
+        let servicesDegraded = statusLine == "Degraded"
+        let servicesRunning = ["Running", "Starting", "Recording", "Processing"].contains(statusLine)
+        let servicesKnown = servicesStopped || servicesDegraded || servicesRunning
+        let canStartServices = servicesStopped || servicesDegraded
+        let canStopServices = servicesRunning || servicesDegraded
+        let canUseTmux = servicesKnown
 
         let status = NSMenuItem(title: "Status: \(statusLine)", action: nil, keyEquivalent: "")
         status.isEnabled = false
@@ -315,10 +523,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(actionItem("Start Services", #selector(startServices)))
-        menu.addItem(actionItem("Stop Services", #selector(stopServices)))
-        menu.addItem(actionItem("Restart Services", #selector(restartServices)))
-        menu.addItem(actionItem("Open tmux Session", #selector(openTmuxSession)))
+        menu.addItem(actionItem("Start Services", #selector(startServices), enabled: canStartServices))
+        menu.addItem(actionItem("Stop Services", #selector(stopServices), enabled: canStopServices))
+        menu.addItem(actionItem("Restart Services", #selector(restartServices), enabled: canUseTmux))
+        menu.addItem(actionItem("Open tmux Session", #selector(openTmuxSession), enabled: canUseTmux))
+
+        menu.addItem(.separator())
+        let recordingStatus = NSMenuItem(title: "Dictation: \(dictationStateDisplay)", action: nil, keyEquivalent: "")
+        recordingStatus.isEnabled = false
+        menu.addItem(recordingStatus)
+        menu.addItem(hotkeyItem("Insert / Stop Dictation", hotkeys.insert))
+        menu.addItem(hotkeyItem("Review / Stop Dictation", hotkeys.review))
+        menu.addItem(hotkeyItem("Clean / Stop Dictation", hotkeys.clean))
 
         menu.addItem(.separator())
         menu.addItem(actionItem("Open Dictation Config", #selector(openConfig)))
@@ -327,8 +543,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(actionItem("Run Doctor", #selector(runDoctor)))
 
         menu.addItem(.separator())
-        menu.addItem(actionItem("Install Startup Task...", #selector(installStartupTask)))
-        menu.addItem(actionItem("Uninstall Startup Task...", #selector(uninstallStartupTask)))
+        addStartupTaskItems()
         menu.addItem(actionItem("Create Desktop Launcher", #selector(createDesktopLauncher)))
 
         menu.addItem(.separator())
@@ -340,9 +555,56 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(actionItem("Quit", #selector(quit)))
     }
 
-    private func actionItem(_ title: String, _ selector: Selector) -> NSMenuItem {
+    private var dictationStateDisplay: String {
+        switch dictationState {
+        case "starting":
+            return "starting"
+        case "recording":
+            return "recording"
+        case "processing":
+            return "processing"
+        case "idle":
+            return "idle"
+        default:
+            return "unknown"
+        }
+    }
+
+    private func addStartupTaskItems() {
+        if let installed = startupState.installed {
+            let label = startupState.loaded == true ? "Startup Task: Installed" : "Startup Task: Installed, Not Loaded"
+            let status = NSMenuItem(title: installed ? label : "Startup Task: Not Installed", action: nil, keyEquivalent: "")
+            status.isEnabled = false
+            menu.addItem(status)
+            if installed {
+                menu.addItem(actionItem("Uninstall Startup Task...", #selector(uninstallStartupTask)))
+            } else {
+                menu.addItem(actionItem("Install Startup Task...", #selector(installStartupTask)))
+            }
+        } else {
+            let item = NSMenuItem(title: "Startup Task: Checking...", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+    }
+
+    private func actionItem(_ title: String, _ selector: Selector, enabled: Bool = true) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
         item.target = self
+        item.isEnabled = enabled
+        return item
+    }
+
+    private func hotkeyItem(_ title: String, _ hotkey: String) -> NSMenuItem {
+        guard let parsed = parseMenuHotkey(hotkey) else {
+            let item = NSMenuItem(title: "\(title) (\(displayHotkey(hotkey)))", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            return item
+        }
+
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: parsed.keyEquivalent)
+        item.keyEquivalentModifierMask = parsed.modifiers
+        item.isEnabled = false
         return item
     }
 
@@ -407,6 +669,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 message: output.isEmpty ? "No output." : output
             )
             self?.refreshStatus()
+            self?.refreshStartupStatus(force: true)
         }
     }
 
@@ -426,6 +689,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 message: output.isEmpty ? "No output." : output
             )
             self?.refreshStatus()
+            self?.refreshStartupStatus(force: true)
         }
     }
 

@@ -65,6 +65,26 @@ def test_strip_edge_hallucinations_removes_only_you():
     assert removed == ["you"]
 
 
+def test_strip_edge_hallucinations_removes_trailing_thank():
+    cleaned, removed = strip_edge_hallucinations(
+        "Let's improve the menu a little bit. Thank",
+        ["you", "thank", "[BLANK_AUDIO]", "BLANK_AUDIO"],
+    )
+
+    assert cleaned == "Let's improve the menu a little bit."
+    assert removed == ["Thank"]
+
+
+def test_strip_edge_hallucinations_removes_blank_audio_marker():
+    cleaned, removed = strip_edge_hallucinations(
+        "This one should end cleanly. [BLANK_AUDIO]",
+        ["you", "thank", "[BLANK_AUDIO]", "BLANK_AUDIO"],
+    )
+
+    assert cleaned == "This one should end cleanly."
+    assert removed == ["[BLANK_AUDIO]"]
+
+
 def test_normalize_transcript_newlines_joins_accidental_prose_breaks():
     raw = (
         "a really stupid AI would\n"

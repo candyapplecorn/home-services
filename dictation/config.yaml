@@ -13,6 +13,9 @@ transcription:
   # Whisper sometimes appends/prepends these short hallucinations near silence.
   edge_hallucinations:
     - you
+    - thank
+    - "[BLANK_AUDIO]"
+    - BLANK_AUDIO
   # If audio/transcription gets stuck, the next hotkey after this delay resets processing.
   processing_timeout_seconds: 30
   # Bound PortAudio shutdown/WAV flush so memory pressure cannot leave hotkeys wedged.
