@@ -181,6 +181,29 @@ def test_apply_spoken_punctuation_quotes_and_ellipsis():
     assert commands == ["open quote", "ellipsis", "end quote"]
 
 
+def test_apply_spoken_punctuation_accepts_ellipsis_variants():
+    cleaned, commands = apply_spoken_punctuation(
+        "I have a fix ellipses but also an endpoint ellipse."
+    )
+
+    assert cleaned == "I have a fix... but also an endpoint..."
+    assert commands == ["ellipses", "ellipse"]
+
+
+def test_apply_spoken_punctuation_protects_literal_ellipses():
+    cleaned, commands = apply_spoken_punctuation("write literal ellipses here")
+
+    assert cleaned == "write ellipses here"
+    assert commands == []
+
+
+def test_apply_spoken_punctuation_collapses_duplicate_commas_from_asr_punctuation():
+    cleaned, commands = apply_spoken_punctuation("Basically, comma, I found a problem comma, okay")
+
+    assert cleaned == "Basically, I found a problem, okay"
+    assert commands == ["comma", "comma"]
+
+
 def test_apply_spoken_punctuation_newlines_and_etc():
     cleaned, commands = apply_spoken_punctuation(
         "first line new line second line new paragraph et cetera"

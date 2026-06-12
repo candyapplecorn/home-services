@@ -13,7 +13,13 @@ DEFAULT_SPOKEN_PUNCTUATION: tuple[tuple[str, str], ...] = (
     ("new line", "\n"),
     ("newline", "\n"),
     ("line break", "\n"),
+    ("three periods", "..."),
+    ("three dots", "..."),
+    ("triple dot", "..."),
+    ("triple dots", "..."),
     ("ellipsis", "..."),
+    ("ellipses", "..."),
+    ("ellipse", "..."),
     ("elipses", "..."),
     ("dot dot dot", "..."),
     ("period", "."),
@@ -271,7 +277,10 @@ def _normalize_spoken_punctuation_spacing(text: str) -> str:
     text = re.sub(r"[ \t]+([,.;:!?%\]\)\}])", r"\1", text)
     text = re.sub(r"([\[\(\{])[ \t]+", r"\1", text)
     text = re.sub(r"[ \t]+([.]{3})", r"\1", text)
-    text = re.sub(r"([.]{3})[ \t]*([,.;:!?])", r"\1\2", text)
+    text = re.sub(r"\.{4,}", "...", text)
+    text = re.sub(r"([.]{3})[ \t]*[,;:]+", r"\1", text)
+    text = re.sub(r"([.]{3})[ \t]*([!?])", r"\1\2", text)
+    text = re.sub(r",{2,}", ",", text)
     text = re.sub(rf"{OPEN_DOUBLE_QUOTE}[ \t]*", '"', text)
     text = re.sub(rf"[ \t]*{CLOSE_DOUBLE_QUOTE}", '"', text)
     text = re.sub(rf"{OPEN_SINGLE_QUOTE}[ \t]*", "'", text)
