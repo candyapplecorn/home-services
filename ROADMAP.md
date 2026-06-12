@@ -71,6 +71,9 @@ Core principles:
 ### Dictation Product Improvements
 
 - Add configurable transcription profiles: fast short dictation, long-form review, code/text cleanup, and high-accuracy mode.
+- Add user-configurable dictation hotkeys while preserving built-in defaults.
+- Treat Hyper-D as the primary default and Hyper-R as the secondary default; explain or reconsider Hyper-C and clean-mode bindings so their purpose is obvious.
+- Explore showing hotkey equivalents right-aligned in menu bar items if macOS menu APIs support it cleanly.
 - Add a local transcript history browser.
 - Add retry and reprocess support for kept recordings.
 - Add safer clipboard fallback behavior with clear logging.
@@ -111,6 +114,8 @@ Deliverable: a short recommendation memo identifying which features are worth ad
 - Treat Windows as a later roadmap track after the macOS workflow is stable.
 - Support constrained or managed Windows environments where users may be able to run scripts but cannot install arbitrary GUI utilities.
 - Prioritize a no-GUI CLI workflow before Windows tray packaging; tray support should be optional, not required for parity.
+- Longer term, convert Bash management and install scripts to Python where it improves portability, testability, and shared behavior across platforms.
+- Keep macOS-only pieces such as menu bar integration, dictation permissions, global hotkeys, and Accessibility-driven insertion behind platform-specific adapters.
 - Define the Windows baseline around start, stop, status, doctor, logs, and attach-style workflows that map cleanly to the original two-pane service model.
 - Separate platform-specific code from shared service logic.
 - Replace or abstract macOS-only APIs: global hotkeys, Accessibility-driven text insertion, clipboard fallback behavior, microphone permission checks, audio feedback, menu bar UI, `open`, Terminal, AppleScript, and tmux assumptions.

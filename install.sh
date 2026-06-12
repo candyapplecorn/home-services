@@ -12,25 +12,25 @@ MODEL_URL="${HOME_SERVICES_WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/w
 DOWNLOAD_MODEL=0
 INSTALL_AI_HELPER_LOCAL=0
 DOWNLOAD_AI_MODEL=0
-AI_HELPER_MODEL="${HOME_SERVICES_AI_HELPER_MODEL:-google/gemma-4-E4B-it}"
+AI_HELPER_MODEL="${HOME_SERVICES_AI_HELPER_MODEL:-}"
 AI_HELPER_MIN_FREE_MB="${HOME_SERVICES_AI_HELPER_MIN_FREE_MB:-30000}"
 HF_HOME_DIR="${HF_HOME:-$HOME/.cache/huggingface}"
-AI_HELPER_DEFAULT_MODEL_DIR="$HOME/Library/Application Support/HomeServices/ai-helper/models/gemma-4-e4b-it"
+AI_HELPER_DEFAULT_MODEL_DIR="$HOME/Library/Application Support/HomeServices/ai-helper/models/local-model"
 
 usage() {
   cat <<EOF
 Usage:
   ./install.sh                  Install Homebrew packages and Python apps
   ./install.sh --download-model  Also download $MODEL_FILE
-  ./install.sh --ai-helper-local Install experimental Gemma + voice Python dependencies
+  ./install.sh --ai-helper-local Install experimental local AI + voice Python dependencies
   ./install.sh --download-ai-model
-                                Install experimental AI deps and download $AI_HELPER_MODEL
+                                Install experimental AI deps and download HOME_SERVICES_AI_HELPER_MODEL
 
 Environment:
   HOME_SERVICES_WHISPER_MODEL       Whisper model name (default: medium.en)
   HOME_SERVICES_WHISPER_MODELS_DIR  Model directory (default: ~/.cache/whisper-cpp)
   HOME_SERVICES_WHISPER_MODEL_URL   Override model download URL
-  HOME_SERVICES_AI_HELPER_MODEL     Hugging Face model id (default: google/gemma-4-E4B-it)
+  HOME_SERVICES_AI_HELPER_MODEL     Local runtime model id to download
   HOME_SERVICES_AI_HELPER_MIN_FREE_MB
                                       Minimum free MB for AI model download (default: 30000)
   HF_HOME                            Hugging Face cache dir (default: ~/.cache/huggingface)
@@ -101,8 +101,7 @@ Cache path: $HF_HOME_DIR
 Free: ${free_mb} MB
 Required: ${AI_HELPER_MIN_FREE_MB} MB
 
-Free space or choose a smaller model, for example:
-  HOME_SERVICES_AI_HELPER_MODEL=google/gemma-4-E2B-it ./install.sh --download-ai-model
+Free space or choose a smaller model with HOME_SERVICES_AI_HELPER_MODEL.
 EOF
     exit 1
   fi
@@ -121,6 +120,10 @@ if (( INSTALL_AI_HELPER_LOCAL )); then
 fi
 
 if (( DOWNLOAD_AI_MODEL )); then
+  if [[ -z "$AI_HELPER_MODEL" ]]; then
+    echo "install.sh: HOME_SERVICES_AI_HELPER_MODEL is required with --download-ai-model" >&2
+    exit 1
+  fi
   cd "$AI_HELPER_DIR"
   check_ai_model_disk_space
   echo "install.sh: downloading experimental AI model $AI_HELPER_MODEL to the Hugging Face cache"
@@ -139,9 +142,6 @@ install.sh: skipped experimental AI helper setup.
 The AI helper is in progress and is not part of the default services yet.
 To try it later, run:
   ./install.sh --ai-helper-local
-
-Expected model id:
-  $AI_HELPER_MODEL
 
 Default local model path:
   $AI_HELPER_DEFAULT_MODEL_DIR

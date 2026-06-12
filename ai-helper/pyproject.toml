@@ -1,7 +1,7 @@
 [project]
 name = "ai-helper-service"
 version = "0.1.0"
-description = "Local Gemma-backed command line helper"
+description = "Configurable command line AI helper"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []

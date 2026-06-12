@@ -3,16 +3,18 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import sys
+from dataclasses import replace
 
 from .client import ServiceUnavailable, healthcheck, query_service
 from .config import load_settings
+from .provider import build_provider
 from .server import serve
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ai-helper",
-        description="Ask the local Gemma-backed AI helper service a question.",
+        description="Ask the configured AI helper backend a question.",
     )
     parser.add_argument(
         "prompt",
@@ -32,12 +34,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--voice",
         action="store_true",
-        help="Record a voice prompt, transcribe it with whisper-cli, then ask Gemma.",
+        help="Record a voice prompt, transcribe it with whisper-cli, then ask the configured backend.",
     )
     parser.add_argument(
         "--max-new-tokens",
+        "--max-output-tokens",
+        dest="max_output_tokens",
         type=int,
-        help="Override AI_HELPER_MAX_NEW_TOKENS for this invocation.",
+        help="Override AI_HELPER_MAX_OUTPUT_TOKENS for this invocation.",
     )
 
     return parser
@@ -53,14 +57,28 @@ def _prompt_from_args(parts: list[str]) -> str:
 
 def _doctor() -> int:
     settings = load_settings()
-    print(f"model={settings.model}")
+    print(f"backend={settings.backend}")
     print(f"endpoint=http://{settings.host}:{settings.port}")
     print(f"service={'running' if healthcheck(settings) else 'stopped'}")
+    print(f"server_token_configured={'yes' if settings.server_token else 'no'}")
+
+    if settings.backend == "local":
+        print(f"local_model={settings.local_model}")
+    elif settings.backend == "http":
+        print(f"api_url_configured={'yes' if settings.api_url else 'no'}")
+        print(f"api_token_configured={'yes' if settings.api_token else 'no'}")
+        print(f"api_model_configured={'yes' if settings.api_model else 'no'}")
+        print(f"api_headers_configured={'yes' if settings.api_headers else 'no'}")
+        print(f"api_body_template_configured={'yes' if settings.api_body_template else 'no'}")
+        print(f"api_response_path={settings.api_response_path}")
+    elif settings.backend == "python":
+        print(f"provider_function_configured={'yes' if settings.provider_function else 'no'}")
 
     missing = []
-    for module in ("torch", "transformers", "accelerate"):
-        if importlib.util.find_spec(module) is None:
-            missing.append(module)
+    if settings.backend == "local":
+        for module in ("torch", "transformers", "accelerate"):
+            if importlib.util.find_spec(module) is None:
+                missing.append(module)
 
     missing_voice = []
     for module in ("numpy", "sounddevice", "soundfile"):
@@ -70,7 +88,7 @@ def _doctor() -> int:
     if missing:
         print(f"missing_model_runtime={','.join(missing)}")
         print('install_model_runtime=cd ~/bin/home-services/ai-helper && .venv/bin/python -m pip install -e ".[local,voice,dev]"')
-    else:
+    elif settings.backend == "local":
         print("model_runtime=installed")
 
     if missing_voice:
@@ -85,14 +103,8 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
     settings = load_settings()
-    if args.max_new_tokens:
-        settings = type(settings)(
-            model=settings.model,
-            host=settings.host,
-            port=settings.port,
-            max_new_tokens=args.max_new_tokens,
-            enable_thinking=settings.enable_thinking,
-        )
+    if args.max_output_tokens:
+        settings = replace(settings, max_output_tokens=args.max_output_tokens)
 
     command = args.prompt[0] if args.prompt else None
     if command == "serve" and len(args.prompt) == 1:
@@ -115,9 +127,7 @@ def main() -> int:
         if args.server:
             response = query_service(prompt, settings)
         else:
-            from .model import ModelRunner
-
-            response = ModelRunner(settings).generate(prompt)
+            response = build_provider(settings).generate(prompt)
     except ServiceUnavailable as error:
         print(str(error), file=sys.stderr)
         print("Start it with: ai-helper serve", file=sys.stderr)

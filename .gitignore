@@ -11,3 +11,8 @@ venv/
 .mypy_cache/
 *.wav
 .DS_Store
+.env
+.env.*
+!.env.example
+ai-helper/provider.local.py
+ai-helper/*.local.py

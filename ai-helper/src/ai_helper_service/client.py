@@ -12,10 +12,13 @@ class ServiceUnavailable(RuntimeError):
 
 
 def query_service(prompt: str, settings: Settings, timeout: float = 600.0) -> str:
+    headers = {"Content-Type": "application/json"}
+    if settings.server_token:
+        headers["X-AI-Helper-Token"] = settings.server_token
     request = urllib.request.Request(
         f"http://{settings.host}:{settings.port}/v1/query",
         data=json.dumps({"prompt": prompt}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
 
@@ -33,10 +36,11 @@ def query_service(prompt: str, settings: Settings, timeout: float = 600.0) -> st
 
 
 def healthcheck(settings: Settings, timeout: float = 2.0) -> bool:
+    request = urllib.request.Request(f"http://{settings.host}:{settings.port}/health")
+    if settings.server_token:
+        request.add_header("X-AI-Helper-Token", settings.server_token)
     try:
-        with urllib.request.urlopen(
-            f"http://{settings.host}:{settings.port}/health", timeout=timeout
-        ) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status == 200
     except urllib.error.URLError:
         return False

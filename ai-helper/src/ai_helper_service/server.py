@@ -5,13 +5,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .config import Settings
-from .model import ModelRunner
+from .provider import build_provider, is_loopback_host
 
 
 class AiHelperServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], settings: Settings):
         super().__init__(server_address, Handler)
-        self.runner = ModelRunner(settings)
+        self.settings = settings
+        self.provider = build_provider(settings)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -28,8 +29,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _authorized(self) -> bool:
+        token = self.server.settings.server_token
+        return not token or self.headers.get("X-AI-Helper-Token") == token
+
     def do_GET(self) -> None:
         if self.path == "/health":
+            if not self._authorized():
+                self._send_json(401, {"error": "unauthorized"})
+                return
             self._send_json(200, {"status": "ok"})
             return
         self._send_json(404, {"error": "not found"})
@@ -37,6 +45,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path != "/v1/query":
             self._send_json(404, {"error": "not found"})
+            return
+        if not self._authorized():
+            self._send_json(401, {"error": "unauthorized"})
             return
 
         try:
@@ -46,16 +57,25 @@ class Handler(BaseHTTPRequestHandler):
             if not prompt:
                 self._send_json(400, {"error": "prompt is required"})
                 return
-            response = self.server.runner.generate(prompt)
+            response = self.server.provider.generate(prompt)
             self._send_json(200, {"response": response})
-        except Exception as error:
-            self._send_json(500, {"error": str(error)})
+        except Exception:
+            self._send_json(500, {"error": "generation failed"})
 
 
 def serve(settings: Settings) -> None:
+    if (
+        settings.backend in {"http", "python"}
+        and not is_loopback_host(settings.host)
+        and not settings.server_token
+    ):
+        raise RuntimeError(
+            "AI_HELPER_SERVER_TOKEN is required to serve a non-local backend on a non-loopback host"
+        )
+
     httpd = AiHelperServer((settings.host, settings.port), settings)
     print(
-        f"ai-helper: serving {settings.model} on http://{settings.host}:{settings.port}",
+        f"ai-helper: serving {settings.backend} backend on http://{settings.host}:{settings.port}",
         flush=True,
     )
     httpd.serve_forever()

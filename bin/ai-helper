@@ -5,14 +5,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AI_HELPER_DIR="${HOME_SERVICES_AI_HELPER_DIR:-$ROOT/ai-helper}"
 AI_HELPER_BIN="$AI_HELPER_DIR/.venv/bin/ai-helper"
-DEFAULT_MODEL_DIR="$HOME/Library/Application Support/HomeServices/ai-helper/models/gemma-4-e4b-it"
+DEFAULT_MODEL_DIR="${AI_HELPER_LOCAL_MODEL:-$HOME/Library/Application Support/HomeServices/ai-helper/models/local-model}"
 
 if [[ "${1:-}" == "install-model" ]]; then
   source_path="${2:-}"
   if [[ -z "$source_path" ]]; then
     cat >&2 <<EOF
 Usage:
-  ai-helper install-model /path/to/downloaded/gemma-4-e4b-it
+  ai-helper install-model /path/to/local-model
 
 The source directory must contain config.json, tokenizer.json, and model.safetensors.
 EOF
@@ -46,7 +46,7 @@ Run:
   cd "$ROOT"
   ./install.sh
 
-For local Gemma + voice dependencies:
+For local AI + voice dependencies:
   ./install.sh --ai-helper-local
 EOF
   exit 1
