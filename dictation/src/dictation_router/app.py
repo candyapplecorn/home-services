@@ -27,6 +27,7 @@ from dictation_router.routing.editor import EditorLauncher
 from dictation_router.routing.inserter import TextInserter
 from dictation_router.routing.router import Router
 from dictation_router.transcription.postprocess import (
+    apply_spoken_punctuation,
     normalize_transcript_newlines,
     strip_edge_hallucinations,
 )
@@ -440,10 +441,21 @@ class DictationApp:
                 self.config.transcription.edge_hallucinations,
             )
             transcript = normalize_transcript_newlines(transcript)
+            spoken_punctuation: list[str] = []
+            if self.config.transcription.spoken_punctuation:
+                transcript, spoken_punctuation = apply_spoken_punctuation(
+                    transcript,
+                    self.config.transcription.spoken_punctuation_replacements,
+                )
             if removed_hallucinations:
                 self.logger.info(
                     "Removed likely edge hallucination(s): %s",
                     ", ".join(removed_hallucinations),
+                )
+            if spoken_punctuation:
+                self.logger.info(
+                    "Applied spoken punctuation: %s",
+                    ", ".join(spoken_punctuation),
                 )
 
             job.write_text(job.final_transcript_path, transcript)
@@ -467,6 +479,7 @@ class DictationApp:
                 final_transcript_path=str(job.final_transcript_path),
                 transcript_characters=len(transcript),
                 transcript_chars_per_minute=chars_per_min,
+                spoken_punctuation_commands=spoken_punctuation,
             )
 
             try:

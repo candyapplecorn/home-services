@@ -34,6 +34,8 @@ class TranscriptionConfig:
     no_speech_threshold: float = 0.35
     logprob_threshold: float = -1.0
     min_chars_per_minute: float = 200.0
+    spoken_punctuation: bool = True
+    spoken_punctuation_replacements: dict[str, str | None] = field(default_factory=dict)
     edge_hallucinations: list[str] = field(
         default_factory=lambda: ["you", "thank", "[BLANK_AUDIO]", "BLANK_AUDIO"]
     )
@@ -102,6 +104,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     editor_raw = raw.get("editor", {})
     hotkeys_raw = raw.get("hotkeys", {})
     audio_raw = raw.get("audio", {})
+    spoken_punctuation_replacements = transcription_raw.get("spoken_punctuation_replacements") or {}
 
     return AppConfig(
         transcription=TranscriptionConfig(
@@ -116,6 +119,8 @@ def load_config(path: Path | None = None) -> AppConfig:
             no_speech_threshold=float(transcription_raw.get("no_speech_threshold", 0.35)),
             logprob_threshold=float(transcription_raw.get("logprob_threshold", -1.0)),
             min_chars_per_minute=float(transcription_raw.get("min_chars_per_minute", 200.0)),
+            spoken_punctuation=bool(transcription_raw.get("spoken_punctuation", True)),
+            spoken_punctuation_replacements=dict(spoken_punctuation_replacements),
             edge_hallucinations=list(
                 transcription_raw.get(
                     "edge_hallucinations",

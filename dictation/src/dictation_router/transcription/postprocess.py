@@ -1,6 +1,166 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+
+OPEN_DOUBLE_QUOTE = "\uE000OPEN_DOUBLE_QUOTE\uE000"
+CLOSE_DOUBLE_QUOTE = "\uE000CLOSE_DOUBLE_QUOTE\uE000"
+OPEN_SINGLE_QUOTE = "\uE000OPEN_SINGLE_QUOTE\uE000"
+CLOSE_SINGLE_QUOTE = "\uE000CLOSE_SINGLE_QUOTE\uE000"
+
+DEFAULT_SPOKEN_PUNCTUATION: tuple[tuple[str, str], ...] = (
+    ("new paragraph", "\n\n"),
+    ("new line", "\n"),
+    ("newline", "\n"),
+    ("line break", "\n"),
+    ("ellipsis", "..."),
+    ("elipses", "..."),
+    ("dot dot dot", "..."),
+    ("period", "."),
+    ("full stop", "."),
+    ("comma", ","),
+    ("question mark", "?"),
+    ("exclamation mark", "!"),
+    ("exclamation point", "!"),
+    ("exclamation", "!"),
+    ("semicolon", ";"),
+    ("semi colon", ";"),
+    ("colon", ":"),
+    ("open parenthesis", "("),
+    ("opening parenthesis", "("),
+    ("left parenthesis", "("),
+    ("left parentheses", "("),
+    ("open parentheses", "("),
+    ("close parenthesis", ")"),
+    ("closing parenthesis", ")"),
+    ("right parenthesis", ")"),
+    ("right parentheses", ")"),
+    ("close parentheses", ")"),
+    ("open bracket", "["),
+    ("opening bracket", "["),
+    ("left bracket", "["),
+    ("open square bracket", "["),
+    ("left square bracket", "["),
+    ("close bracket", "]"),
+    ("closing bracket", "]"),
+    ("right bracket", "]"),
+    ("close square bracket", "]"),
+    ("right square bracket", "]"),
+    ("open brace", "{"),
+    ("opening brace", "{"),
+    ("left brace", "{"),
+    ("open curly brace", "{"),
+    ("left curly brace", "{"),
+    ("close brace", "}"),
+    ("closing brace", "}"),
+    ("right brace", "}"),
+    ("close curly brace", "}"),
+    ("right curly brace", "}"),
+    ("open angle bracket", "<"),
+    ("left angle bracket", "<"),
+    ("less than sign", "<"),
+    ("close angle bracket", ">"),
+    ("right angle bracket", ">"),
+    ("greater than sign", ">"),
+    ("open double quote", OPEN_DOUBLE_QUOTE),
+    ("opening double quote", OPEN_DOUBLE_QUOTE),
+    ("left double quote", OPEN_DOUBLE_QUOTE),
+    ("close double quote", CLOSE_DOUBLE_QUOTE),
+    ("closing double quote", CLOSE_DOUBLE_QUOTE),
+    ("right double quote", CLOSE_DOUBLE_QUOTE),
+    ("end double quote", CLOSE_DOUBLE_QUOTE),
+    ("open quote", OPEN_DOUBLE_QUOTE),
+    ("opening quote", OPEN_DOUBLE_QUOTE),
+    ("left quote", OPEN_DOUBLE_QUOTE),
+    ("close quote", CLOSE_DOUBLE_QUOTE),
+    ("closing quote", CLOSE_DOUBLE_QUOTE),
+    ("right quote", CLOSE_DOUBLE_QUOTE),
+    ("end quote", CLOSE_DOUBLE_QUOTE),
+    ("open single quote", OPEN_SINGLE_QUOTE),
+    ("opening single quote", OPEN_SINGLE_QUOTE),
+    ("left single quote", OPEN_SINGLE_QUOTE),
+    ("close single quote", CLOSE_SINGLE_QUOTE),
+    ("closing single quote", CLOSE_SINGLE_QUOTE),
+    ("right single quote", CLOSE_SINGLE_QUOTE),
+    ("end single quote", CLOSE_SINGLE_QUOTE),
+    ("single quote", "'"),
+    ("apostrophe", "'"),
+    ("double quote", '"'),
+    ("quote", OPEN_DOUBLE_QUOTE),
+    ("backslash", "\\"),
+    ("back slash", "\\"),
+    ("forward slash", "/"),
+    ("slash", "/"),
+    ("hyphen", "-"),
+    ("dash", "-"),
+    ("minus sign", "-"),
+    ("minus", "-"),
+    ("subtract", "-"),
+    ("plus sign", "+"),
+    ("plus", "+"),
+    ("multiply sign", "*"),
+    ("multiplication sign", "*"),
+    ("multiply", "*"),
+    ("asterisk", "*"),
+    ("star symbol", "*"),
+    ("star sign", "*"),
+    ("open star", "*"),
+    ("equals sign", "="),
+    ("equal sign", "="),
+    ("equals", "="),
+    ("underscore", "_"),
+    ("under score", "_"),
+    ("hash sign", "#"),
+    ("pound sign", "#"),
+    ("number sign", "#"),
+    ("hash", "#"),
+    ("hashtag", "#"),
+    ("at sign", "@"),
+    ("ampersand", "&"),
+    ("and sign", "&"),
+    ("percent sign", "%"),
+    ("percentage sign", "%"),
+    ("percent", "%"),
+    ("percentage", "%"),
+    ("caret sign", "^"),
+    ("carat sign", "^"),
+    ("carrot sign", "^"),
+    ("caret", "^"),
+    ("carat", "^"),
+    ("carrot", "^"),
+    ("dollar sign", "$"),
+    ("tilde", "~"),
+    ("pipe symbol", "|"),
+    ("vertical bar", "|"),
+    ("tab", "\t"),
+    ("et cetera", "etc."),
+    ("etcetera", "etc."),
+)
+
+DEFAULT_SPOKEN_PUNCTUATION_REPLACEMENTS = {
+    phrase: replacement for phrase, replacement in DEFAULT_SPOKEN_PUNCTUATION
+}
+
+SPOKEN_PUNCTUATION_PHRASES = tuple(
+    re.escape(phrase)
+    for phrase, _replacement in sorted(
+        DEFAULT_SPOKEN_PUNCTUATION,
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+)
+
+SPOKEN_PUNCTUATION_PATTERN = re.compile(
+    r"\b(" + "|".join(SPOKEN_PUNCTUATION_PHRASES) + r")\b",
+    re.IGNORECASE,
+)
+
+PROTECTED_SPOKEN_PUNCTUATION_PATTERN = re.compile(
+    r"\b(?:literal|the word|word|called|named)\s+("
+    + "|".join(SPOKEN_PUNCTUATION_PHRASES)
+    + r")\b",
+    re.IGNORECASE,
+)
 
 
 def normalize_transcript_newlines(text: str) -> str:
@@ -25,6 +185,102 @@ def _normalize_paragraph_newlines(paragraph: str) -> str:
 
     joined = " ".join(lines)
     return re.sub(r"[ \t]{2,}", " ", joined).strip()
+
+
+def apply_spoken_punctuation(
+    text: str,
+    configured_replacements: Mapping[str, str | None] | None = None,
+) -> tuple[str, list[str]]:
+    """Convert explicit dictation punctuation commands into punctuation marks."""
+    if not text:
+        return text, []
+
+    replacements = _spoken_punctuation_replacements(configured_replacements)
+    if not replacements:
+        return text, []
+
+    punctuation_pattern, protected_pattern = _spoken_punctuation_patterns(replacements)
+    converted: list[str] = []
+    protected: list[str] = []
+
+    def protect(match: re.Match[str]) -> str:
+        protected.append(match.group(1))
+        return f"\uE001PROTECTED_{len(protected) - 1}\uE001"
+
+    def replace(match: re.Match[str]) -> str:
+        spoken = match.group(1)
+        replacement = replacements[spoken.lower()]
+        converted.append(spoken)
+        return replacement
+
+    guarded = protected_pattern.sub(protect, text)
+    cleaned = punctuation_pattern.sub(replace, guarded)
+    for index, phrase in enumerate(protected):
+        cleaned = cleaned.replace(f"\uE001PROTECTED_{index}\uE001", phrase)
+    if not converted:
+        return cleaned, converted
+
+    return _normalize_spoken_punctuation_spacing(cleaned), converted
+
+
+def _spoken_punctuation_replacements(
+    configured_replacements: Mapping[str, str | None] | None,
+) -> dict[str, str]:
+    replacements = dict(DEFAULT_SPOKEN_PUNCTUATION_REPLACEMENTS)
+    if not configured_replacements:
+        return replacements
+
+    for phrase, replacement in configured_replacements.items():
+        normalized_phrase = phrase.strip().lower()
+        if not normalized_phrase:
+            continue
+        if replacement is None:
+            replacements.pop(normalized_phrase, None)
+            continue
+        replacements[normalized_phrase] = str(replacement)
+    return replacements
+
+
+def _spoken_punctuation_patterns(
+    replacements: Mapping[str, str],
+) -> tuple[re.Pattern[str], re.Pattern[str]]:
+    if replacements.keys() == DEFAULT_SPOKEN_PUNCTUATION_REPLACEMENTS.keys():
+        return SPOKEN_PUNCTUATION_PATTERN, PROTECTED_SPOKEN_PUNCTUATION_PATTERN
+
+    phrases = tuple(
+        re.escape(phrase)
+        for phrase in sorted(
+            replacements,
+            key=len,
+            reverse=True,
+        )
+    )
+    phrase_pattern = "|".join(phrases)
+    return (
+        re.compile(r"\b(" + phrase_pattern + r")\b", re.IGNORECASE),
+        re.compile(
+            r"\b(?:literal|the word|word|called|named)\s+("
+            + phrase_pattern
+            + r")\b",
+            re.IGNORECASE,
+        ),
+    )
+
+
+def _normalize_spoken_punctuation_spacing(text: str) -> str:
+    text = re.sub(r"[ \t]+([,.;:!?%\]\)\}])", r"\1", text)
+    text = re.sub(r"([\[\(\{])[ \t]+", r"\1", text)
+    text = re.sub(r"[ \t]+([.]{3})", r"\1", text)
+    text = re.sub(r"([.]{3})[ \t]*([,.;:!?])", r"\1\2", text)
+    text = re.sub(rf"{OPEN_DOUBLE_QUOTE}[ \t]*", '"', text)
+    text = re.sub(rf"[ \t]*{CLOSE_DOUBLE_QUOTE}", '"', text)
+    text = re.sub(rf"{OPEN_SINGLE_QUOTE}[ \t]*", "'", text)
+    text = re.sub(rf"[ \t]*{CLOSE_SINGLE_QUOTE}", "'", text)
+    text = re.sub(r"(\w)[ \t]*'[ \t]*(\w)", r"\1'\2", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
 
 
 def _looks_structured(lines: list[str]) -> bool:

@@ -10,6 +10,10 @@ transcription:
   logprob_threshold: -1.0
   # Warn when transcript density suggests dropped 30s windows
   min_chars_per_minute: 200
+  # Convert spoken dictation commands like "comma", "open parenthesis", and "new line".
+  spoken_punctuation: true
+  # Optional overrides. Set a phrase to null to disable it, or add your own phrase: mark.
+  spoken_punctuation_replacements: {}
   # Whisper sometimes appends/prepends these short hallucinations near silence.
   edge_hallucinations:
     - you

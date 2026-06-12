@@ -18,6 +18,7 @@ from dictation_router.routing.destination import (
 from dictation_router.routing.cleaner import clean_transcript
 from dictation_router.routing.router import RouteResult, Router
 from dictation_router.transcription.postprocess import (
+    apply_spoken_punctuation,
     normalize_transcript_newlines,
     strip_edge_hallucinations,
 )
@@ -151,12 +152,73 @@ def test_normalize_transcript_newlines_preserves_list_blocks():
     assert normalize_transcript_newlines(raw) == raw
 
 
+def test_apply_spoken_punctuation_basic_marks():
+    cleaned, commands = apply_spoken_punctuation("hello comma world period")
+
+    assert cleaned == "hello, world."
+    assert commands == ["comma", "period"]
+
+
+def test_apply_spoken_punctuation_brackets_and_math_symbols():
+    cleaned, commands = apply_spoken_punctuation(
+        "open parenthesis alpha plus beta close parenthesis multiply gamma equals delta"
+    )
+
+    assert cleaned == "(alpha + beta) * gamma = delta"
+    assert commands == [
+        "open parenthesis",
+        "plus",
+        "close parenthesis",
+        "multiply",
+        "equals",
+    ]
+
+
+def test_apply_spoken_punctuation_quotes_and_ellipsis():
+    cleaned, commands = apply_spoken_punctuation("open quote hello ellipsis end quote")
+
+    assert cleaned == '"hello..."'
+    assert commands == ["open quote", "ellipsis", "end quote"]
+
+
+def test_apply_spoken_punctuation_newlines_and_etc():
+    cleaned, commands = apply_spoken_punctuation(
+        "first line new line second line new paragraph et cetera"
+    )
+
+    assert cleaned == "first line\nsecond line\n\netc."
+    assert commands == ["new line", "new paragraph", "et cetera"]
+
+
+def test_apply_spoken_punctuation_protects_literal_words():
+    cleaned, commands = apply_spoken_punctuation(
+        "write the word comma and literal period not punctuation"
+    )
+
+    assert cleaned == "write comma and period not punctuation"
+    assert commands == []
+
+
+def test_apply_spoken_punctuation_accepts_config_overrides():
+    cleaned, commands = apply_spoken_punctuation(
+        "hello comma world stop",
+        {"comma": None, "stop": "."},
+    )
+
+    assert cleaned == "hello comma world."
+    assert commands == ["stop"]
+
+
 def test_load_config(tmp_path: Path):
     config_file = tmp_path / "config.yaml"
     config_file.write_text(
         yaml.dump(
             {
-                "transcription": {"model": "small.en"},
+                "transcription": {
+                    "model": "small.en",
+                    "spoken_punctuation": False,
+                    "spoken_punctuation_replacements": {"stop": "."},
+                },
                 "hotkeys": {"insert": "hyper+d"},
             }
         ),
@@ -164,6 +226,8 @@ def test_load_config(tmp_path: Path):
     )
     config = load_config(config_file)
     assert config.transcription.model == "small.en"
+    assert config.transcription.spoken_punctuation is False
+    assert config.transcription.spoken_punctuation_replacements == {"stop": "."}
     assert config.hotkeys.insert == "hyper+d"
 
 
