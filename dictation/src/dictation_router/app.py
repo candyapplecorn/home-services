@@ -13,7 +13,7 @@ import numpy as np
 import soundfile as sf
 
 from dictation_router.alerts import publish_unrecoverable_recording_alert
-from dictation_router.audio.recorder import AudioRecorder
+from dictation_router.audio.recorder import AudioRecorder, finalize_raw_recording_to_wav
 from dictation_router.config.settings import (
     RECORDINGS_DIR,
     STATE_FILE,
@@ -130,8 +130,21 @@ class DictationApp:
                     self.feedback.ack()
                     ack_requested = time.perf_counter()
                     recorder_start_started = time.perf_counter()
-                    self.recorder.start()
+                    self.recorder.start(self._active_job.audio_path)
                     stream_active = time.perf_counter()
+                    if self._active_job is not None:
+                        self._active_job.update(
+                            audio_file_path=str(self._active_job.audio_path),
+                            recording_raw_path=(
+                                str(self.recorder.raw_path) if self.recorder.raw_path else None
+                            ),
+                            audio_sample_rate=self.config.audio.sample_rate,
+                            audio_channels=self.config.audio.channels,
+                            audio_dtype="float32",
+                            audio_write_strategy="streamed_raw_pcm",
+                            alert_on_unrecoverable=True,
+                            unrecoverable_alert_reason="recording_missing_audio_after_restart",
+                        )
                     self._write_activity_state("recording")
                     recording_state_written = time.perf_counter()
                     self.feedback.recording_started()
@@ -322,7 +335,8 @@ class DictationApp:
                 self._processing_started_at = None
                 self._active_job = None
             self._write_activity_state("idle")
-            self._cleanup_recording(source_audio_path)
+            if source_audio_path != job_audio_path:
+                self._cleanup_recording(source_audio_path)
             self._cleanup_old_recordings()
 
     def _process_job(
@@ -552,6 +566,11 @@ class DictationApp:
         try:
             for job in jobs:
                 if job.status == "recording" and not job.audio_path.is_file():
+                    if self._recover_streamed_recording(job):
+                        self.feedback.job_recovered()
+                        with self._transcription_lock:
+                            self._process_job(job, recovered=True)
+                        continue
                     last_error = "App exited before recording produced an audio file"
                     should_alert = bool(job.data.get("alert_on_unrecoverable"))
                     job.update(
@@ -560,6 +579,7 @@ class DictationApp:
                         failed_at=utc_now_iso(),
                     )
                     if should_alert:
+                        raw_audio_path = job.data.get("recording_raw_path") or job.job_dir / "audio.raw"
                         publish_unrecoverable_recording_alert(
                             job,
                             reason="recording_missing_audio_after_restart",
@@ -568,9 +588,10 @@ class DictationApp:
                                 f"Job: {job.job_id}\n"
                                 f"Job path: {job.job_dir}\n"
                                 f"Expected audio path: {job.audio_path}\n\n"
-                                "This usually means the app or audio stack died while stopping and "
-                                "saving the recording. Because no audio file exists, Home Services "
-                                "cannot retry transcription for this dictation."
+                                f"Raw audio path: {raw_audio_path}\n\n"
+                                "Home Services could not find a finalized WAV or usable streamed raw "
+                                "audio sidecar for this recording, so it cannot retry transcription "
+                                "for this dictation."
                             ),
                             logger=self.logger,
                         )
@@ -591,6 +612,38 @@ class DictationApp:
                 else:
                     next_state = "idle"
             self._write_activity_state(next_state)
+
+    def _recover_streamed_recording(self, job: DictationJob) -> bool:
+        raw_path = Path(str(job.data.get("recording_raw_path") or job.job_dir / "audio.raw"))
+        if not raw_path.is_file() or raw_path.stat().st_size == 0:
+            return False
+
+        sample_rate = int(job.data.get("audio_sample_rate") or self.config.audio.sample_rate)
+        channels = int(job.data.get("audio_channels") or self.config.audio.channels)
+        try:
+            finalize_raw_recording_to_wav(raw_path, job.audio_path, sample_rate, channels)
+            duration_s = sf.info(str(job.audio_path)).duration
+        except Exception as exc:
+            self.logger.exception("Failed to recover streamed raw recording for job %s: %s", job.job_id, exc)
+            job.update(
+                last_error=f"Failed to recover streamed raw recording: {exc}",
+                raw_recording_recovery_failed_at=utc_now_iso(),
+            )
+            return False
+
+        job.update(
+            status="recorded",
+            audio_file_path=str(job.audio_path),
+            recovered_from_streamed_raw_path=str(raw_path),
+            recovered_audio_duration_seconds=duration_s,
+            recovered_audio_file_size_bytes=job.audio_path.stat().st_size,
+        )
+        self.logger.warning(
+            "Recovered unfinished recording for job %s from streamed raw audio: %s",
+            job.job_id,
+            raw_path,
+        )
+        return True
 
     def _prewarm_audio(self) -> None:
         try:
@@ -629,12 +682,27 @@ class DictationApp:
 
         if stop_thread.is_alive():
             message = f"Timed out stopping audio recorder after {timeout_s:.1f}s"
+            recoverable_path = getattr(recorder, "recoverable_output_path", None)
+            if isinstance(recoverable_path, Path) and recoverable_path.is_file():
+                self.logger.critical("%s; using already finalized audio file %s", message, recoverable_path)
+                job = self._active_job
+                if job is not None:
+                    job.update(
+                        status="recorded",
+                        audio_file_path=str(recoverable_path),
+                        last_error=message,
+                        stop_timeout_recovered_audio=True,
+                        stop_timeout_recovered_at=utc_now_iso(),
+                    )
+                self.recorder = self._new_recorder()
+                return recoverable_path
+
             self.logger.critical("%s; restarting dictation process", message)
             job = self._active_job
             if job is not None:
                 job.update(
                     status="failed_terminal",
-                    last_error=f"{message} before writing an audio file",
+                    last_error=f"{message} before recovering an audio file",
                     failed_at=utc_now_iso(),
                     alert_on_unrecoverable=True,
                     unrecoverable_alert_reason="recording_stop_timeout_before_audio_saved",
@@ -643,14 +711,15 @@ class DictationApp:
                     job,
                     reason="recording_stop_timeout_before_audio_saved",
                     details=(
-                        f"{message} before Home Services could write the recording.\n\n"
+                        f"{message} before Home Services could finalize or recover the recording.\n\n"
                         f"Job: {job.job_id}\n"
                         f"Job path: {job.job_dir}\n"
                         f"Expected audio path: {job.audio_path}\n"
+                        f"Raw audio path: {job.data.get('recording_raw_path') or job.job_dir / 'audio.raw'}\n"
                         f"Timeout: {timeout_s:.1f}s\n\n"
                         "The recorder stop call did not return. Home Services killed the dictation "
-                        "process so the hotkeys would not stay wedged. Because the audio file was "
-                        "never written, there is no recording to transcribe or recover."
+                        "process so the hotkeys would not stay wedged. The streamed raw audio sidecar "
+                        "was also missing or unusable, so there is no recording to transcribe or recover."
                     ),
                     logger=self.logger,
                 )

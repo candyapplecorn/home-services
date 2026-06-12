@@ -497,7 +497,7 @@ def test_hotkey_ack_happens_before_recorder_start():
     app = DictationApp(AppConfig(), MagicMock())
     app.recorder = MagicMock()
     app.recorder.is_recording = False
-    app.recorder.start.side_effect = lambda: events.append("recorder_start")
+    app.recorder.start.side_effect = lambda _audio_path: events.append("recorder_start")
     app.job_store = MagicMock()
     app.job_store.create.return_value = MagicMock()
     app.feedback = MagicMock()
@@ -600,6 +600,7 @@ def test_finish_recording_restarts_process_when_recorder_stop_hangs():
         time.sleep(1)
 
     old_recorder.stop.side_effect = hang_stop
+    old_recorder.recoverable_output_path = None
     app.recorder = old_recorder
     app.feedback = MagicMock()
     app._processing = True
@@ -612,6 +613,69 @@ def test_finish_recording_restarts_process_when_recorder_stop_hangs():
     assert app._processing_started_at is None
     exit_mock.assert_called_once_with(75)
     app.feedback.error.assert_called_once()
+
+
+def test_stop_timeout_uses_recoverable_audio_file(tmp_path: Path):
+    from unittest.mock import MagicMock, patch
+
+    import numpy as np
+    import soundfile as sf
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import JobStore
+
+    config = AppConfig()
+    config.transcription.recording_stop_timeout_seconds = 0.01
+    app = DictationApp(config, MagicMock())
+
+    store = JobStore(tmp_path / "jobs")
+    job = store.create(RoutingMode.INSERT)
+    sf.write(str(job.audio_path), np.zeros((1600, 1), dtype="float32"), 16000)
+
+    def hang_stop():
+        time.sleep(1)
+
+    recorder = MagicMock()
+    recorder.stop.side_effect = hang_stop
+    recorder.recoverable_output_path = job.audio_path
+    app.recorder = recorder
+    app._active_job = job
+
+    with patch("dictation_router.app.os._exit") as exit_mock:
+        recovered_path = app._stop_recorder_with_timeout()
+
+    assert recovered_path == job.audio_path
+    assert job.data["stop_timeout_recovered_audio"] is True
+    exit_mock.assert_not_called()
+
+
+def test_finish_recording_does_not_cleanup_job_audio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from unittest.mock import MagicMock
+
+    import numpy as np
+    import soundfile as sf
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import JobStore
+
+    store = JobStore(tmp_path / "jobs")
+    job = store.create(RoutingMode.INSERT)
+    sf.write(str(job.audio_path), np.zeros((1600, 1), dtype="float32"), 16000)
+
+    app = DictationApp(AppConfig(), MagicMock())
+    app.job_store = store
+    app._active_job = job
+    app.feedback = MagicMock()
+    app._stop_recorder_with_timeout = MagicMock(return_value=job.audio_path)
+    app._process_job = MagicMock(return_value=True)
+    monkeypatch.setattr(app, "_cleanup_old_recordings", lambda: None)
+
+    app._finish_recording(RoutingMode.INSERT, destination_snapshot=None)
+
+    assert job.audio_path.is_file()
+    app._process_job.assert_called_once()
 
 
 def test_job_store_persists_and_recovers_recorded_job(tmp_path: Path):
@@ -629,6 +693,58 @@ def test_job_store_persists_and_recovers_recorded_job(tmp_path: Path):
     assert job.status_path.read_text(encoding="utf-8") == "failed_retryable\n"
     assert job.audio_path.read_bytes() == b"fake audio"
     assert [recovered.job_id for recovered in store.recoverable_jobs()] == [job.job_id]
+
+
+def test_audio_recorder_streams_raw_audio_before_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import numpy as np
+    import soundfile as sf
+
+    from dictation_router.audio.recorder import AudioRecorder
+
+    streams = []
+
+    class FakeInputStream:
+        def __init__(self, **kwargs):
+            self.callback = kwargs["callback"]
+            streams.append(self)
+
+        def start(self):
+            pass
+
+        def abort(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("dictation_router.audio.recorder.sd.InputStream", FakeInputStream)
+
+    output_path = tmp_path / "audio.wav"
+    recorder = AudioRecorder(sample_rate=16000, channels=1)
+    recorder.start(output_path)
+    streams[0].callback(np.ones((1600, 1), dtype="float32"), 1600, None, None)
+
+    raw_path = tmp_path / "audio.raw"
+    assert raw_path.is_file()
+    assert raw_path.stat().st_size > 0
+
+    assert recorder.stop() == output_path
+    assert output_path.is_file()
+    assert sf.info(str(output_path)).duration == pytest.approx(0.1)
+
+
+def test_finalize_raw_recording_to_wav(tmp_path: Path):
+    import numpy as np
+    import soundfile as sf
+
+    from dictation_router.audio.recorder import finalize_raw_recording_to_wav
+
+    raw_path = tmp_path / "audio.raw"
+    output_path = tmp_path / "audio.wav"
+    np.ones((1600, 1), dtype="float32").tofile(raw_path)
+
+    assert finalize_raw_recording_to_wav(raw_path, output_path, 16000, 1) == output_path
+    assert sf.info(str(output_path)).duration == pytest.approx(0.1)
 
 
 def test_whisper_transcriber_captures_stdout_stderr_and_command(tmp_path: Path):
@@ -829,6 +945,42 @@ def test_recover_unfinished_jobs_processes_recorded_jobs(tmp_path: Path):
 
     app.feedback.job_recovered.assert_called_once()
     app._process_job.assert_called_once()
+
+
+def test_recover_unfinished_jobs_converts_streamed_raw_recording(tmp_path: Path):
+    from unittest.mock import MagicMock
+
+    import numpy as np
+
+    from dictation_router.app import DictationApp
+    from dictation_router.config.settings import AppConfig
+    from dictation_router.jobs import JobStore
+
+    store = JobStore(tmp_path / "jobs")
+    job = store.create(RoutingMode.INSERT)
+    raw_path = job.job_dir / "audio.raw"
+    np.ones((1600, 1), dtype="float32").tofile(raw_path)
+    job.update(
+        audio_file_path=str(job.audio_path),
+        recording_raw_path=str(raw_path),
+        audio_sample_rate=16000,
+        audio_channels=1,
+        audio_dtype="float32",
+        audio_write_strategy="streamed_raw_pcm",
+    )
+
+    app = DictationApp(AppConfig(), MagicMock())
+    app.job_store = store
+    app.feedback = MagicMock()
+    app._process_job = MagicMock(return_value=True)
+
+    app._recover_unfinished_jobs()
+
+    assert job.audio_path.is_file()
+    app.feedback.job_recovered.assert_called_once()
+    app._process_job.assert_called_once()
+    recovered_job = store.load(job.job_dir)
+    assert recovered_job.data["recovered_from_streamed_raw_path"] == str(raw_path)
 
 
 def test_recovery_defers_when_dictation_busy(tmp_path: Path):
